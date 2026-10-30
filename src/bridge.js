@@ -900,6 +900,7 @@ function loadConfig() {
         stickerNote: true,
         collectSticker: true,
         getSelfImage: true,
+        getSelfAvatar: true,
         closeConversation: true
       },
       wake: {
@@ -1048,6 +1049,7 @@ function loadConfig() {
     stickerNote: true,
     collectSticker: true,
     getSelfImage: true,
+    getSelfAvatar: true,
     closeConversation: true,
     sendVoice: false,
     ...(cfg.socialV2.tools ?? {})
@@ -5222,7 +5224,7 @@ async function main() {
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
           }
           // tools：只接受布尔开关
-          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
+          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'getSelfAvatar', 'sendVoice'];
           if (body.tools && typeof body.tools === 'object') {
             merged.tools = { ...(current.tools ?? {}), ...body.tools };
             for (const k of toolFlags) {
@@ -5510,6 +5512,7 @@ async function main() {
             stickerNote: 'qq_sticker_note',
             collectSticker: 'qq_collect_sticker',
             getSelfImage: 'qq_get_self_image',
+            getSelfAvatar: 'qq_get_self_avatar',
             sendVoice: 'qq_send_voice / qq_list_voices'
           };
           const tools = cfg.socialV2?.tools ?? {};
@@ -6381,6 +6384,48 @@ async function main() {
             sendJson({ ok: true, key, image: { mimeType, data: buf.toString('base64') } });
           } catch (error) {
             sendJson({ ok: false, error: `读取 AI 形象图片失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+        // ── 改 QQ 头像（MCP qq_set_avatar 走这里；仅主人私聊会话） ──────────
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/set-avatar') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const token = String(req.headers['x-agent-token'] ?? '').trim();
+          const file = String(body.file ?? '').trim();
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          if (!file || !/^https?:\/\//.test(file)) { sendJson({ ok: false, error: 'file 必须是 http(s) 图片地址' }, 400); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '改头像仅 reserved2 模式可用' }, 403); return; }
+          if (!token || !agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (key !== `private:${cfg.ownerQQ}`) { sendJson({ ok: false, error: '改头像仅主人私聊会话可用' }, 403); return; }
+          try {
+            const data = await bot.raw('set_qq_avatar', { file });
+            log(`控制台：设置 QQ 头像成功 (${key})`);
+            sendJson({ ok: true, data });
+          } catch (error) {
+            sendJson({ ok: false, error: `设置头像失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+        // ── 查看自己的真实 QQ 头像（MCP qq_get_self_avatar 走这里） ──────────
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/self-avatar') {
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('getSelfAvatar')) { sendJson({ ok: false, error: '工具未启用：qq_get_self_avatar' }, 403); return; }
+          const uin = String(selfUserId || '').trim();
+          if (!uin) { sendJson({ ok: false, error: '尚未拿到机器人自己的 QQ 号，稍后再试' }, 503); return; }
+          const avatarUrl = `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(uin)}&s=640`;
+          try {
+            const res = await fetch(avatarUrl, { signal: AbortSignal.timeout(12000) });
+            if (!res.ok) { sendJson({ ok: false, error: `拉取头像失败：HTTP ${res.status}` }, 502); return; }
+            const buf = Buffer.from(await res.arrayBuffer());
+            const mimeType = mimeFromBuffer(buf) || 'image/jpeg';
+            sendJson({ ok: true, key, image: { mimeType, data: buf.toString('base64') } });
+          } catch (error) {
+            sendJson({ ok: false, error: `拉取头像失败：${error?.message ?? error}` }, 500);
           }
           return;
         }

@@ -677,6 +677,26 @@ server.tool(
   }
 );
 
+if (cfg.socialV2?.tools?.setAvatar !== false) {
+  server.tool(
+    'qq_set_avatar',
+    '设置自己的 QQ 头像（写操作，会影响 QQ 账号对外展示）。**仅主人私聊会话可用**：群会话或非主人调用会被桥接拒绝。参数 file 填一个 http(s) 图片地址（可先用联网搜索找到合适的图片 URL）。改完头像会公开可见，别换不合适的内容。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅主人私聊可用）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      file: z.string().describe('要设置的头像：http(s) 图片 URL')
+    },
+    async ({ key, token, file }) => {
+      try {
+        const data = await agentApi('/api/socialV2/set-avatar', { method: 'POST', body: JSON.stringify({ key, file }), headers: { 'x-agent-token': token } });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `设置头像失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
 server.tool(
   'qq_send_burst',
   '在指定 QQ 群分多条发送消息（二代仿真模式专用），桥接会按真人化随机间隔发送。暂不支持引用，需要引用请用 qq_reply。注意：数组里的每个字符串就是一条 QQ 消息，字符串内部不要用空格分隔中文短句，需要多条请用数组元素；每条消息要读起来完整，不要把同一句话拆到两条里。一次最多 8 条（桥接硬拦）；内容太长先总结/挑重点，不要拆成 10 条刷屏。',
@@ -1268,6 +1288,34 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取形象图片失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.getSelfAvatar !== false) {
+  server.tool(
+    'qq_get_self_avatar',
+    '查看你自己的真实 QQ 头像（当前 QQ 账号的头像，不是默认 Q 版形象）。当别人问你的头像长什么样、或别人发你的头像/资料卡截图需要你认出来时，调用这个工具把真实头像拉进你的视觉上下文。返回的图片会直接进入你的视觉上下文。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）')
+    },
+    async ({ key, token }) => {
+      try {
+        const q = new URLSearchParams({ key });
+        const data = await agentApi(`/api/socialV2/self-avatar?${q.toString()}`, { headers: { 'x-agent-token': token } });
+        if (!data?.image?.data || !data?.image?.mimeType) {
+          return { content: [{ type: 'text', text: `没有可返回的头像：${errorText(data?.error, '未知')}` }], isError: true };
+        }
+        return {
+          content: [
+            { type: 'text', text: '这是你当前的 QQ 头像：' },
+            { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
+          ]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `获取头像失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
