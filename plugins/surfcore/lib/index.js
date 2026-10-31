@@ -68,6 +68,7 @@ import { startScheduler } from './scheduler.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
+import { normalizeAllowlist } from '../../../src/allowlist.js';
 import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_VERSION, electronDownloadUrl } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
 import { createPetPurposeService } from './pet-purpose.js';
@@ -824,6 +825,12 @@ export function apply(ctx) {
     body.bili = planned.bili;
     body.unified = planned.unified;
     if (body.qq && typeof body.qq === 'object') {
+      if (body.qq.allow && typeof body.qq.allow === 'object') {
+        const ownerForAllow = planned.unified?.admin?.qq || readQqConfig().config?.ownerQQ || '';
+        const { allow, warnings } = normalizeAllowlist({ allow: body.qq.allow, ownerQQ: ownerForAllow });
+        body.qq.allow = allow;
+        for (const w of warnings) result.warnings.push(`白名单：${w.message}`);
+      }
       const saved = saveQqConfig(body.qq);
       result.saved.qq = true;
       result.qq = saved.config;
@@ -1395,9 +1402,14 @@ export function apply(ctx) {
       // 5) 主人 + 白名单
       const idStep = installStep('identity', '写入主人 QQ 与白名单');
       if (opts.groups.length) {
-        const priv = opts.ownerQQ ? [opts.ownerQQ] : [];
-        saveQqConfig({ allow: { groups: opts.groups, private: priv } });
-        done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 主人私聊' : ''}`);
+        // 保留用户已有私聊白名单，只追加主人（2026-10-31：以前 [owner] 整体替换会冲掉用户加的人）
+        const { allow, warnings } = normalizeAllowlist({
+          allow: { ...(readQqConfig().config?.allow ?? {}), groups: opts.groups },
+          ownerQQ: opts.ownerQQ,
+        });
+        saveQqConfig({ allow });
+        for (const w of warnings) pluginLog(`[安装] 白名单：${w.code} ${w.message}`);
+        done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 主人私聊' : ''}${warnings.length ? `（${warnings.length} 条修正）` : ''}`);
       } else {
         done(idStep, true, '没选群，跳过（之后在设置 → QQ → 白名单里加）');
       }
@@ -1581,9 +1593,14 @@ export function apply(ctx) {
         .map((g) => String(g ?? '').trim())
         .filter((g) => /^\d{5,15}$/.test(g));
       if (body.applyGroups && groups.length) {
-        const priv = owner ? [owner] : (Array.isArray(cfg.allow?.private) ? cfg.allow.private : []);
-        saveQqConfig({ allow: { groups, private: priv } });
-        changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 主人私聊' : ''}）`);
+        // 同样保留现有私聊白名单（2026-10-31 反馈：安装/诊断修复后用户加的人丢失）
+        const { allow, warnings } = normalizeAllowlist({
+          allow: { ...(cfg.allow ?? {}), groups },
+          ownerQQ: owner || cfg.ownerQQ || '',
+        });
+        saveQqConfig({ allow });
+        for (const w of warnings) pluginLog(`[install-apply] 白名单：${w.code} ${w.message}`);
+        changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 主人私聊' : ''}${warnings.length ? `，${warnings.length} 条修正` : ''}）`);
       }
       // 4) 配置骨架 / 控制台令牌
       for (const action of doctorFix({ ownerQQ: owner })) {

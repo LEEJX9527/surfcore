@@ -165,6 +165,10 @@ const tests = [
   // 语音三闸门 + 配置双写（2026-10-29 复盘）：工具常注册、拒绝带 code/hint、保存带戳防覆盖。
   // 安装清单只能含 git 跟踪文件（2026-10-30：脏清单导致 zip 更新 100% 失败）。
   // 语音失败分类/换路/自检接线（2026-10-30 P0+P1）。
+  // 白名单归一化 + 启动补唤醒（2026-10-31 主人私信被忽略 / 积压不唤醒）。
+  // 称呼按人归属（2026-10-31 主人被叫成对象的称呼）。
+  'test-callname.mjs',
+  'test-allowlist.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
   'test-voice-gates.mjs',

@@ -64,6 +64,8 @@ import { createOwnerAudit } from './owner-audit.js';
 import { createTokenLedger } from './token-ledger.js';
 import { createTurnGuard } from './turn-guard.js';
 import { createGateEventStore } from './gate-events.js';
+import { normalizeAllowlist, pickBacklogSessions } from './allowlist.js';
+import { pickPeerAlias, buildPeerAliasTag } from './callname.js';
 import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
@@ -3598,6 +3600,9 @@ async function main() {
             scheduleProactiveCheckV2(key);
           }
           log('桥接模式已确定为 reserved2，恢复有限睡眠定时器');
+          // 2026-10-31：重启前积压的 unread 不会触发事件，必须显式补唤醒；白名单也要先纠正。
+          reconcileAllowlist('dsh-ready');
+          wakeBacklogConversations('boot');
         }
         try { await flushQueue(); } catch (error) { log('补投队列异常:', error?.message ?? error); }
         // DSH 恢复后，把离线期间攒下的黑话学习窗口补触发
@@ -3711,6 +3716,91 @@ async function main() {
       return { ok: false, code: 'SEND_RECENTLY_FAILED', reason: `最近发送失败：${snowlumaHealth.lastSendError || '未知'}` };
     }
     return { ok: true };
+  }
+
+  const logThrottle = new Map();
+  /** 同一 tag 在 ms 内只打一次日志（未授权会话/守卫重试会刷屏）。 */
+  function logThrottled(tag, ms, message) {
+    const now = Date.now();
+    const last = logThrottle.get(tag) ?? 0;
+    if (now - last < ms) return false;
+    logThrottle.set(tag, now);
+    log(message);
+    return true;
+  }
+
+  /**
+   * 白名单自愈：去掉机器人自己、补上主人、去重。
+   * 2026-10-31 实测：allow.private 里只有机器人自己的 UIN → 主人私信被当未授权忽略。
+   * 这里在启动/登录/DSH 就绪时纠正一次，并落盘 + 记事件，避免用户被静默丢消息。
+   */
+  function reconcileAllowlist(reason = 'boot') {
+    try {
+      const { allow, changed, warnings } = normalizeAllowlist({
+        allow: cfg.allow,
+        ownerQQ: cfg.ownerQQ,
+        selfUserId,
+      });
+      if (!changed) return false;
+      cfg.allow = { ...(cfg.allow ?? {}), private: allow.private, groups: allow.groups };
+      const configFile = path.join(ROOT, 'config.json');
+      const file = readConfigObject(configFile);
+      file.allow = { ...(file.allow ?? {}), private: allow.private, groups: allow.groups };
+      // 改配置前先留一份原始文件（AGENTS 铁律 6）；只保留最近 5 份。
+      try {
+        const dir = path.join(STATE_DIR, 'allowlist-backups');
+        fs.mkdirSync(dir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        fs.copyFileSync(configFile, path.join(dir, `config.${stamp}.json`));
+        const stale = fs.readdirSync(dir).filter((f) => f.startsWith('config.')).sort();
+        for (const f of stale.slice(0, Math.max(0, stale.length - 5))) fs.rmSync(path.join(dir, f), { force: true });
+      } catch (error) {
+        log(`[allow] 备份 config.json 失败（继续）：${error?.message ?? error}`);
+      }
+      atomicWriteJson(configFile, file);
+      for (const w of warnings) log(`[allow] (${reason}) ${w.code}: ${w.message}`);
+      gateEvents.record({
+        gate: 'allowlist',
+        kind: 'config',
+        event: 'allowlist-reconciled',
+        action: 'fixed',
+        reason: { code: 'ALLOWLIST_RECONCILED', message: warnings.map((w) => w.code).join(', ') },
+        impact: '白名单已自动纠正（移除机器人自己 / 补上主人）。不纠正时主人私信会被当作未授权会话忽略。',
+        recommendation: '如需增删，请在设置页保存；系统会保留已有条目并确保主人在私聊白名单里。',
+        confidence: 'confirmed',
+        dedupeKey: `allowlist:${reason}:${allow.private.join(',')}:${allow.groups.join(',')}`,
+      });
+      return true;
+    } catch (error) {
+      log(`[allow] 自愈失败（${reason}）：${error?.message ?? error}`);
+      return false;
+    }
+  }
+
+  /**
+   * 启动补唤醒：桥接重启前积压的 unread 不会触发任何事件，必须在这里补一次。
+   * 只在 reserved2 + DSH 就绪后调用（open 时 currentMode 还是 chat，会被模式守卫吞掉）。
+   */
+  function wakeBacklogConversations(trigger = 'boot') {
+    if (currentMode !== 'reserved2' || cfg.socialV2?.enabled === false) return;
+    const timer = setTimeout(() => {
+      try {
+        const all = pickBacklogSessions(socialV2.conversations.entries(), {
+          isAllowed: (key) => isSessionAllowedInCurrentMode(key),
+        });
+        // 限量：一次补唤醒最多 5 个会话（按未读条数降序），避免重启后一次性叫醒几十个群、白烧 token。
+        const backlog = all.sort((a, b) => b.unread - a.unread).slice(0, 5);
+        if (all.length > backlog.length) log(`[reserved2] 启动补唤醒：共 ${all.length} 个会话有积压，本次只补前 ${backlog.length} 个`);
+        for (const item of backlog) {
+          log(`[reserved2] 启动补唤醒 ${item.key}（${trigger}）：积压 ${item.unread} 条未读`);
+          void sendWakePromptV2(item.key, 'backlog').catch((error) => log(`[reserved2] 补唤醒异常 ${item.key}：${error?.message ?? error}`));
+        }
+        if (backlog.length) log(`[reserved2] 启动补唤醒完成（${trigger}）：${backlog.length} 个会话`);
+      } catch (error) {
+        log(`[reserved2] 启动补唤醒失败：${error?.message ?? error}`);
+      }
+    }, 12_000);
+    timer.unref?.();
   }
 
   function notifySendChannelDown(reason = '') {
@@ -5011,6 +5101,10 @@ async function main() {
               return;
             }
           }
+          // 归一化：去掉机器人自己、确保主人在私聊白名单里、去重（与启动自愈同一套规则）
+          const normalized = normalizeAllowlist({ allow, ownerQQ, selfUserId });
+          allow.private = normalized.allow.private;
+          allow.groups = normalized.allow.groups;
           file.allow = allow;
           file.deny = deny;
           file.ownerQQ = ownerQQ;
@@ -5020,7 +5114,7 @@ async function main() {
           cfg.ownerQQ = ownerQQ;
           reconcileSessionPolicies();
           log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，黑名单人: ${deny.users.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
-          sendJson({ ok: true, allow, deny, ownerQQ });
+          sendJson({ ok: true, allow, deny, ownerQQ, warnings: normalized.warnings });
           return;
         }
 
@@ -11974,6 +12068,32 @@ async function main() {
   function ownerMessageTag() {
     return adminMarker(adminIdentity());
   }
+  // 对齐表（称呼）：只用在**私聊当前对方**身上，不把别人的称呼带进别的会话。
+  const ALIGNMENTS_FILE = path.join(STATE_DIR, 'alignments.json');
+  let alignLinksCache = { key: '', links: [] };
+  function alignmentLinks() {
+    try {
+      const stat = fs.statSync(ALIGNMENTS_FILE);
+      const key = `${stat.mtimeMs}:${stat.size}`;
+      if (alignLinksCache.key === key) return alignLinksCache.links;
+      const json = JSON.parse(fs.readFileSync(ALIGNMENTS_FILE, 'utf8'));
+      const links = Array.isArray(json?.links) ? json.links : [];
+      alignLinksCache = { key, links };
+      return links;
+    } catch {
+      return [];
+    }
+  }
+
+  /** 私聊：当前对方（按 QQ 号）在设置里被指定的称呼；群聊走身份对齐块。 */
+  function peerAliasTagV2(key, isOwner) {
+    const [kind, id] = String(key ?? '').split(':');
+    if (kind !== 'private') return '';
+    const label = pickPeerAlias(alignmentLinks(), id);
+    if (!label) return '';
+    return buildPeerAliasTag({ label, qq: id, isOwner });
+  }
+
   // 记忆卡注入块：插件每次整理后原子写 memory-card-prompt-qq.md，这里按 mtime 缓存读。
   // 不解析 JSON、不依赖插件代码——桥接和插件是不同进程，文件是唯一契约。
   let memoryCardPromptCache = { key: '', text: '' };
@@ -13067,6 +13187,11 @@ async function main() {
     if (reason === 'history') {
       return `${base}【上线补历史】${key}\n原因：你刚上线，桥接用 QQ 历史记录把离线期间错过的消息补进了未读（消息带 history=true；若本次快照没内联，可调用 qq_get_unread_messages 查看）。\n先快速扫一遍补上下文；这些是已经发生的旧消息，除非仍然相关，不要逐条回复或引用，也不要当成刚刚发生。看完可以用 qq_mark_read 或 qq_set_wake_config 安静收尾。`;
     }
+    if (reason === 'backlog') {
+      return `${base}【启动补唤醒】${key}
+原因：桥接重启后，这个会话还积压着重启前的未读消息（之前没人唤醒它们）。
+先调用 qq_get_unread_messages 看一遍，判断是否还需要回应；如果只是旧话题，用 qq_mark_read 清掉即可，不用逐条回应。`;
+    }
     if (reason === 'poke') {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
     }
@@ -13126,9 +13251,10 @@ async function main() {
     const directWake = isDirectFishGuardWake(reason) || fishGuardDirectUnread(st) || fishGuardOwnerUnread(st) || Boolean(bypass);
     const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake });
     if (tokenWake) {
-      log(`[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
+      logThrottled(`token-guard:${key}`, 10 * 60_000, `[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
       if (tokenWake.retryAfterMs > 0 && !st.tokenRetryTimer) {
-        const waitMs = Math.min(60000, Math.max(1000, Math.round(tokenWake.retryAfterMs)));
+        const cap = tokenWake.reason === 'day' ? 10 * 60_000 : 60_000;
+        const waitMs = Math.min(cap, Math.max(1000, Math.round(tokenWake.retryAfterMs)));
         st.tokenRetryTimer = setTimeout(() => {
           st.tokenRetryTimer = null;
           if (!isTimerWakeReason(reason) && !(Array.isArray(st.unread) && st.unread.length > 0)) return;
@@ -13342,6 +13468,7 @@ async function main() {
     // 上线补历史：比主动机会重要，但低于任何“有人正在说话”的原因；
     // 合并窗口里如果同时来了真实消息，会升级成消息类原因，历史仍留在快照里。
     history: 25,
+    backlog: 22,
     proactiveCheck: 20
   };
 
@@ -13354,7 +13481,7 @@ async function main() {
   // 与「未读消息」无关的唤醒原因（定时器/引导/上线补历史）。这些原因在会话繁忙时被暂存后，
   // 不能用「unread 里还有没有对应 seq」来判断是否还要补发 —— 那一轮很可能已经把
   // 未读全部标读了，结果就是 timeout 定时器被静默丢掉、会话停在无定时器的静默态。
-  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin', 'history']);
+  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin', 'history', 'backlog']);
   function isTimerWakeReason(reason) {
     return TIMER_WAKE_REASONS.has(String(reason ?? '').split(':')[0]);
   }
@@ -13909,7 +14036,7 @@ async function main() {
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {
-      log(`忽略未授权会话 ${key}（当前模式 ${currentMode}，来自 ${event.user_id}）`);
+      logThrottled(`unauth:${key}`, 10 * 60_000, `忽略未授权会话 ${key}（当前模式 ${currentMode}，来自 ${event.user_id}；同类日志 10 分钟内只记一次）`);
       return;
     }
     // 人的黑名单（deny.users）：**在一切副作用之前**返回 —— 不入库、不进上下文、
@@ -14312,6 +14439,7 @@ async function main() {
       : '';
     const promptText = recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + chimeInHint
       + (isOwner ? ownerMessageTag() : '')
+      + peerAliasTagV2(key, isOwner)
       + senderLabel + '：' + textContent
       + mediaHintFor(key, messageRef, mediaList);
 
@@ -14347,7 +14475,7 @@ async function main() {
           const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
             ? biliMemory.recallBlock(textContent)
             : '';
-          const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${isOwner ? ownerMessageTag() : ''}${textContent}${mediaHintFor(key, messageRef, mediaList)}`;
+          const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${isOwner ? ownerMessageTag() : ''}${peerAliasTagV2(key, isOwner)}${textContent}${mediaHintFor(key, messageRef, mediaList)}`;
           scheduleSocialReply(
             key, promptText,
             Number(cfg.social?.activeReplyDelayMinMs ?? 2000),
@@ -15343,7 +15471,10 @@ async function main() {
         selfDisplayName = String(login.nickname).trim();
         log(`机器人昵称: ${login.nickname}`);
       }
-      if (login?.user_id != null) selfUserId = String(login.user_id);
+      if (login?.user_id != null) {
+        selfUserId = String(login.user_id);
+        reconcileAllowlist('login');
+      }
       // 把「QQ 昵称 / QQ 号」落一小份给另一侧用：B站 会话是插件进程，拿不到网关登录信息，
       // 但它要靠这两个锚点认出「自己的 QQ 资料卡截图」（2026-10-23 用户要求跨平台互认）。
       saveQqSelfIdentity();
