@@ -66,6 +66,7 @@ import { createTurnGuard } from './turn-guard.js';
 import { createGateEventStore } from './gate-events.js';
 import { normalizeAllowlist, pickBacklogSessions } from './allowlist.js';
 import { pickPeerAlias, buildPeerAliasTag } from './callname.js';
+import { buildPersonaIdentity, personaNameFromCard } from './persona-identity.js';
 import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
@@ -12391,12 +12392,9 @@ async function main() {
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
   function personaIdentityText() {
-    const raw = roleRawContent();
-    const firstHeading = String(raw ?? '').split(/\r?\n/).find((line) => line.startsWith('# ')) || '';
-    const name = String(firstHeading.replace(/^#\s*/, '').trim() || selfDisplayName || '这个角色').trim();
     let owner = '主人';
     try { owner = String(adminIdentity()?.displayName || '主人').trim() || '主人'; } catch {}
-    return `你是${name}；你的主人是${owner}。无论 QQ 群聊、私聊、B站还是桌宠，都必须记得这件事。`;
+    return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
   }
 
   function roleHintForMode(mode, key = '', personaMode = 'full') {

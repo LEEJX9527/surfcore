@@ -3160,3 +3160,11 @@ delivered 17 次（¥1.80），未交付 31 次（¥0.89）；keyword 12 次 0 �
 - 人格拆出 `persona.tone.md`；群聊 `qq_get_prompt` 默认 tone，核心按需 full。
 
 **验证**：`test-group-policy`、`test-persona-layers`、`test-persona-classify`、`npm run test:audit`。
+
+## 未拆分人格卡在 tone 模式只剩身份底座（人设丢了）
+
+- **现象**：没做人格拆分的旧角色，群聊提示词里只有“你是X；主人是Y”，人设正文不见了。
+- **根因**：tone 模式只组装 tone/场景/日常；身份底座永远非空 → 不再触发“只有旧核心时回退”的分支。
+- **修法**（0.8.1）：tone 模式在**没有语气层**时注入核心（未拆分 / 只拆了日常都算）；有语气才省核心；
+  身份底座抽成 `src/persona-identity.js`，QQ/B站/桌宠三处统一注入。
+- **教训**：默认新增“永远非空”的层会悄悄改变旧兜底条件的语义；兜底要按“有没有实质分层”判断，不是按数组非空。

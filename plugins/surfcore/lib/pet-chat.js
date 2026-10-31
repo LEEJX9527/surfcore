@@ -23,6 +23,7 @@ import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './st
 import { resolvePersonaFile } from './persona.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter, readPersonaLayerText } from '../../../src/character-persona.js';
+import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js';
 import { composePersonaLayers } from '../../../src/persona-layers.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
 import { appendMemoryInboxEvent } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
@@ -263,6 +264,10 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const personaCore = personaFile ? textFile(personaFile) : '';
     const persona = composePersonaLayers({
       core: personaCore,
+      // 身份底座：桌宠也要知道“我是谁、主人是谁”，不依赖用户是否拆分人格。
+      identity: buildPersonaIdentity({ name: personaNameFromCard(personaCore, cur?.name || '这个角色'), owner: ownerInfo().name }),
+      // 语气层：桌宠也用同一套说话方式。
+      tone: readPersonaLayerText('tone'),
       scene: readPersonaLayerText('scene', 'pet'),
       daily: readPersonaLayerText('daily'),
       mode: 'v2',

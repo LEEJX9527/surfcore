@@ -71,6 +71,23 @@ assert.ok(fullCompose.text.includes('核心XYZ') && fullCompose.text.includes('�
 const fallbackCompose = composePersonaLayers({ core: '旧角色核心', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
 assert.ok(fallbackCompose.text.includes('旧角色核心'), '旧角色没有语气时回退核心，避免没卡');
 
+// 回归（2026-10-31）：没拆分的旧角色 + 身份底座 → tone 模式也必须带上核心人设。
+const unsplitCompose = composePersonaLayers({
+  core: '旧角色核心正文', identity: '你是小咪；你的主人是雨雨。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
+});
+assert.ok(unsplitCompose.text.includes('旧角色核心正文'), '未拆分人格在 tone 模式必须注入核心，不能只剩身份底座');
+assert.ok(unsplitCompose.text.includes('你的主人是雨雨'), '身份底座也要在');
+// 已拆分：tone 模式仍按省 token 行为，不带核心。
+const splitCompose = composePersonaLayers({
+  core: '核心正文XYZ', tone: '语气ABC', identity: '你是小咪。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
+});
+assert.ok(!splitCompose.text.includes('核心正文XYZ'), '拆分后 tone 模式不带核心（省 token）');
+// 只拆了日常/场景、还没写语气：也要带核心（语气层才是核心的替代品）
+const dailyOnly = composePersonaLayers({
+  core: '核心正文ABC', daily: '日常DEF', identity: '你是小咪。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
+});
+assert.ok(dailyOnly.text.includes('核心正文ABC'), '没有语气层时必须带核心（不能只剩日常）');
+
 // 三个注入点都必须走同一套分层逻辑，不能在 UI 分层后桥接仍读单卡。
 const bridge = fs.readFileSync(path.resolve('src/bridge.js'), 'utf8');
 const scheduler = fs.readFileSync(path.resolve('plugins/surfcore/lib/scheduler.js'), 'utf8');
@@ -82,5 +99,20 @@ for (const [name, src] of [['bridge', bridge], ['scheduler', scheduler], ['pet',
 assert.ok(bridge.includes('currentRoleHintV2(key, personaMode)'), 'QQ qq_get_prompt 必须按会话 key + 人格模式选场景');
 assert.ok(bridge.includes('currentRoleHint(key, personaMode)'), 'QQ 角色提示必须按会话 key + 人格模式选场景');
 assert.ok(bridge.includes('personaSceneFromKey'), 'QQ 没有按群聊/私聊选择场景');
+
+// 身份底座必须在三个平台都注入，且不依赖用户是否拆分人格（2026-10-31 用户要求）。
+const { buildPersonaIdentity } = await import('../src/persona-identity.js');
+const idLine = buildPersonaIdentity({ name: '小咪', owner: '雨雨' });
+assert.ok(idLine.includes('你是小咪') && idLine.includes('雨雨'), '身份句包含角色与主人');
+assert.ok(buildPersonaIdentity({}).includes('这个角色'), '缺省角色名有兜底');
+for (const [name, src] of [['bridge', bridge], ['scheduler', scheduler], ['pet', pet]]) {
+  assert.ok(/buildPersonaIdentity\(/.test(src) || name === 'bridge', `${name} 没有注入身份底座`);
+  assert.ok(/identity:/.test(src), `${name} 的 compose 调用必须传 identity`);
+}
+assert.ok(scheduler.includes('identity: buildPersonaIdentity('), 'B站 提示词必须带身份底座');
+assert.ok(pet.includes('identity: buildPersonaIdentity('), '桌宠 提示词必须带身份底座');
+// 语气层也要跟着走：不能只有 QQ 用语气，B站/桌宠还是干巴巴的人设。
+assert.ok(scheduler.includes("tone: readPersonaLayerText('tone')"), 'B站 提示词必须带语气层');
+assert.ok(pet.includes("tone: readPersonaLayerText('tone')"), '桌宠 提示词必须带语气层');
 
 console.log('✅ 人格卡分层通过');

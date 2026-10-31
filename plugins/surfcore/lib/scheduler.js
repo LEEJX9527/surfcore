@@ -37,6 +37,7 @@ import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-id
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
+import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
 
 // 当前角色的 B站 行为目录（角色系统未启用时回退旧目录）。
 function platformDir() {
@@ -87,6 +88,13 @@ function personaCardBlock() {
   const max = Math.max(600, Math.min(6000, Number(unified.persona?.compactChars) || 2200))
   const composed = composePersonaLayers({
     core: card,
+    // 身份底座：B站 也必须知道“我是谁、主人是谁”，不能只靠日常层里的那一行。
+    identity: buildPersonaIdentity({
+      name: personaNameFromCard(card),
+      owner: String(unified?.admin?.displayName || '').trim() || '主人',
+    }),
+    // 语气层：B站 也要按同一个说话方式，不能只 QQ 有。
+    tone: readPersonaLayerText('tone'),
     scene: readPersonaLayerText('scene', 'bili'),
     daily: readPersonaLayerText('daily'),
     mode: 'v2',
