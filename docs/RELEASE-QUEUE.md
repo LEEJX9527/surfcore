@@ -11,7 +11,34 @@
 
 ## 待发布
 
-### 批次 2026-10-30 23:40 · 语音包退出 zip 自动更新（0.7.19 后）
+### 批次 2026-10-31 08:10 · 一键启动 SurfCore / 一键停止（0.7.20 后）
+<!-- release-batch: start=2026-10-31T08:10+08:00 end=2026-10-31T08:30+08:00 commits=282dc6c -->
+
+**覆盖提交**：`282dc6c`
+**建议**：patch → **0.7.21**
+
+**需求**：一键启动整合成多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；语音本地/云端单选；
+下面加一键停止；每项显示状态，切换页一致；失败可见且给建议。
+
+**实现**：
+- 概览「一键启动 SurfCore」多选 + 语音分支；「一键停止（全部）」；
+- `start-selected` / `stop-selected`，每项 `ok/code/error/hint`；
+- 停止顺序语音→QQ→B站→桌宠（语音由桥接托管，避免孤儿进程）；
+- `overview.launch` 统一 `bridgeStatus / schedulerStatus / petService / /api/voice/packs`；
+- QQ 停止不关闭 SnowLuma 本体；语音未装/桥接未起/平台开关关闭都有结构化错误。
+
+**未做**：真实进程启停手测、语音页深链、SnowLuma 本体停止（设计边界）。
+
+**case**：[docs/cases/2026-10-31-one-click-launch-stop.md](cases/2026-10-31-one-click-launch-stop.md)
+**验证**：`node scripts/test-launch-components.mjs`；`plugins/surfcore npm test`
+（test-client-contract / test-platform-start-host）；`npm run test:audit` 90/90。
+**交接**：同步 `plugins/surfcore/lib/{index,client}.js`、`scripts/test-launch-components.mjs`、
+`plugins/surfcore/scripts/{test-client-contract,test-platform-start-host}.mjs`、docs、manifest。
+重启 DSH 后页面生效；真实启动/停止需手测。
+
+---
+
+### 已发布 v0.7.20 · 2026-10-30 23:40 · 语音包退出 zip 自动更新
 <!-- release-batch: start=2026-10-30T23:40+08:00 end=2026-10-30T23:50+08:00 commits=44bae2d -->
 
 **覆盖提交**：`44bae2d`
@@ -34,7 +61,7 @@
 
 ---
 
-### 批次 2026-10-30 19:30 · SnowLuma 断线通道闸门（0.7.19 后）
+### 已发布 v0.7.20 · 2026-10-30 19:30 · SnowLuma 断线通道闸门
 <!-- release-batch: start=2026-10-30T19:30+08:00 end=2026-10-30T19:50+08:00 commits=44481cc -->
 
 **覆盖提交**：`44481cc`

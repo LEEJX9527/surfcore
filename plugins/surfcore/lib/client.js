@@ -1473,6 +1473,12 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const platformStart = overview?.platformStart ?? {};
       const qqStart = platformStart.qq !== false;
       const biliStart = platformStart.bili !== false;
+      // ── 一键启动 / 停止（QQ+B站+桌宠+语音）────────────────────────────
+      const launch = overview?.launch ?? {};
+      const [launchSel, setLaunchSel] = useState({ qq: true, bili: true, pet: false, voice: false });
+      const [voiceBranch, setVoiceBranch] = useState("voice-local");
+      const [launchResult, setLaunchResult] = useState(null);
+      const [launchErr, setLaunchErr] = useState(null);
       // ── 组件更新（2026-10-26）──────────────────────────────────────────
       // 检查在插件里做（git fetch，只读）；界面只负责展示与确认。
       const updates = overview?.updates ?? {};
@@ -1613,6 +1619,30 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           await reload();
         } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
       };
+      const runLaunch = async (mode) => {
+        const ids = mode === "stop"
+          ? ["qq", "bili", "pet", "voice"]
+          : Object.entries(launchSel).filter(([, on]) => on).map(([id]) => id);
+        if (!ids.length) { toast("✗ 至少勾选一项"); return; }
+        setBusy(mode === "stop" ? "launch-stop" : "launch-start");
+        setLaunchErr(null);
+        try {
+          const res = await api("/bridge", { method: "POST", body: {
+            action: mode === "stop" ? "stop-selected" : "start-selected",
+            components: ids,
+            voicePack: voiceBranch,
+          } });
+          setLaunchResult({ ...res, _mode: mode });
+          const bad = (res.items ?? []).filter((x) => !x.ok);
+          toast(bad.length
+            ? `✗ ${bad.length} 项失败：${bad.map((x) => x.label).join("、")}`
+            : `✓ ${mode === "stop" ? "已停止" : "已启动"}：${(res.items ?? []).map((x) => x.label).join("、")}`);
+          await reload();
+        } catch (e) {
+          setLaunchErr({ message: e.message, code: e.code, hint: e.hint });
+          toast(`✗ ${mode === "stop" ? "停止" : "启动"}失败：${e.message}${e.hint ? `；${e.hint}` : ""}`);
+        } finally { setBusy(""); }
+      };
       return h("div", null,
         h("div", { className: "qbw-infobox" },
           "一个窗口管两边：QQ 仍然由原来那个桥接进程收发消息，B站仍然用同一份 bili.config.json。",
@@ -1660,13 +1690,43 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-kv" },
               h("span", null, "B站"),
               h("span", null, biliStart ? (scheduler.running ? "启动开关开 · 生物钟在跑" : "启动开关开 · 未运行") : "启动开关关")),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { onClick: () => act("start-all"), disabled: !!busy || (!qqStart && !biliStart) }, "一键启动（含 SnowLuma）"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => act("start-qq"), disabled: !!busy || !qqStart || Boolean(bridge.running) }, "启动QQ"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => act("start-bili"), disabled: !!busy || !biliStart || Boolean(scheduler.running) }, "启动B站")),
-            h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "2px", paddingTop: "2px" } },
+            h("div", { className: "qbw-group", style: { marginTop: "8px" } }, "一键启动 SurfCore"),
+            h("div", { className: "qbw-actions", style: { marginTop: "4px" } },
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
+                h("input", { type: "checkbox", checked: launchSel.qq, onChange: (e) => setLaunchSel((v) => ({ ...v, qq: e.target.checked })) }),
+                h("span", null, `QQ（含 SnowLuma）${launch.qq?.running ? " · 运行中" : " · 未运行"}`)),
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
+                h("input", { type: "checkbox", checked: launchSel.bili, onChange: (e) => setLaunchSel((v) => ({ ...v, bili: e.target.checked })) }),
+                h("span", null, `B站${launch.bili?.running ? " · 运行中" : " · 未运行"}`)),
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
+                h("input", { type: "checkbox", checked: launchSel.pet, onChange: (e) => setLaunchSel((v) => ({ ...v, pet: e.target.checked })) }),
+                h("span", null, `桌宠${launch.pet?.running ? " · 运行中" : (launch.pet?.installed ? " · 未运行" : " · 未安装")}`)),
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px" } },
+                h("input", { type: "checkbox", checked: launchSel.voice, onChange: (e) => setLaunchSel((v) => ({ ...v, voice: e.target.checked })) }),
+                h("span", null, `语音${launch.voice?.running ? " · 运行中" : " · 未运行"}`))),
+            launchSel.voice ? h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: 0 } },
+              h("span", { className: "qbw-hint" }, "语音分支："),
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
+                h("input", { type: "radio", name: "voiceBranch", checked: voiceBranch === "voice-local", onChange: () => setVoiceBranch("voice-local") }),
+                h("span", null, `本地模型${(launch.voice?.installed ?? []).includes("voice-local") ? "" : "（未安装）"}`)),
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
+                h("input", { type: "radio", name: "voiceBranch", checked: voiceBranch === "voice-cloud", onChange: () => setVoiceBranch("voice-cloud") }),
+                h("span", null, `云端模型${(launch.voice?.installed ?? []).includes("voice-cloud") ? "" : "（未安装）"}`))) : null,
+            h("div", { className: "qbw-actions", style: { marginTop: "6px" } },
+              h(Btn, { onClick: () => runLaunch("start"), disabled: !!busy }, busy === "launch-start" ? "启动中…" : "一键启动 SurfCore"),
+              h(Btn, { kind: "qbw-btn2", onClick: () => runLaunch("stop"), disabled: !!busy }, busy === "launch-stop" ? "停止中…" : "一键停止（全部）"),
               h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("qq"), disabled: !!busy }, "去 QQ 页改启动开关"),
               h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("bili"), disabled: !!busy }, "去 B站 页改启动开关")),
+            [["qq", "QQ"], ["bili", "B站"], ["pet", "桌宠"], ["voice", "语音"]].map(([id, label]) =>
+              launch[id]?.lastError ? h("div", { className: "qbw-hint", key: `launch-err-${id}`, style: { color: "#c0392b", marginTop: "2px" } },
+                `${label}：${launch[id].lastError}`) : null),
+            launchErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } },
+              `${launchErr.code ? `（${launchErr.code}）` : ""}${launchErr.message}`,
+              launchErr.hint ? h("div", { className: "qbw-hint" }, `建议：${launchErr.hint}`) : null) : null,
+            (launchResult?.items ?? []).length ? h("div", { style: { marginTop: "6px" } },
+              ...(launchResult.items).map((it) => h("div", { className: "qbw-kv", key: it.id },
+                h("span", null, `${it.ok ? "✓" : "✗"} ${it.label}`),
+                h("span", null, it.ok ? (it.message || (launchResult?._mode === "stop" ? "已停止" : "已启动")) : `${it.error || "失败"}${it.hint ? `；${it.hint}` : ""}`)))) : null,
             h("label", { className: "qbw-row", style: { alignItems: "center" } },
               h("span", { className: "qbw-label" }, "一键启动成功后弹窗提示"),
               h("input", {
@@ -1674,7 +1734,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 checked: unified?.bridge?.startupNotify !== false,
                 onChange: (e) => setUnified(["bridge", "startupNotify"], e.target.checked),
               })),
-            h("div", { className: "qbw-hint" }, "已在跑的服务不会重复启动；QQ 启动时会按需打开已安装的 SnowLuma（仍需你扫码）。人格卡在「角色」页维护（和角色包在一起），这里不再重复显示。")),
+            h("div", { className: "qbw-hint" }, "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma（仍需扫码）。一键停止只停 SurfCore 托管的 QQ 桥接、B站生物钟、桌宠和语音包，不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
           h("div", { className: "qbw-card" },
             h("h4", null, "更新 ", (() => {
               const rows = updates.results ?? [];

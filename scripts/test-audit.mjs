@@ -178,6 +178,8 @@ const tests = [
   'test-gate-events.mjs',
   // SnowLuma 断线/发送失败暂停：主动唤醒不得创建 DSH 会话（零 token）。
   'test-snowluma-channel-gate.mjs',
+  // 一键启动/停止接线：QQ/B站/桌宠/语音多选、语音本地/云端分支、结构化失败。
+  'test-launch-components.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
 ];

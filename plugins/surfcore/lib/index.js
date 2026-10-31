@@ -370,6 +370,16 @@ export function apply(ctx) {
     }
     return schedulerStatus;
   }
+  function stopSchedulerNow() {
+    const wasRunning = Boolean(scheduler && schedulerStatus.running);
+    try { scheduler?.stop?.(); } catch (error) {
+      pluginLog('生物钟停止失败：', String(error?.message ?? error));
+    }
+    scheduler = null;
+    schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
+    if (wasRunning) pluginLog('生物钟已停止');
+    return { ok: true, wasRunning, scheduler: schedulerStatus };
+  }
   startSchedulerNow();
 
   // 管理员称呼的存量修复：v0.7.2 及以前只把 ownerQQ 投影到 QQ config.json，
@@ -707,6 +717,7 @@ export function apply(ctx) {
       // 组件更新：概览「更新」卡与启动弹窗都读它（检查结果是缓存的，不在这里触发网络）。
       updates: updates.status(),
       scheduler: schedulerStatus,
+      launch: await launchStatus(),
       snowluma: {
         launcherPath: String(snow.launcherPath ?? ''),
         allowLaunch: snow.allowLaunch === true,
@@ -2249,6 +2260,208 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
   }
 
+  // ── 一键启动 / 停止（概览、QQ、B站、桌宠、语音共用同一份状态）────────────
+  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice'];
+  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音' };
+
+  function normalizeLaunchComponents(input) {
+    const list = Array.isArray(input) ? input : [];
+    const picked = list.map((x) => String(x)).filter((x) => LAUNCH_IDS.includes(x));
+    return [...new Set(picked)];
+  }
+
+  async function voicePacksSnapshot() {
+    const bridge = await bridgeStatus().catch(() => ({ running: false }));
+    if (!bridge.running) return { ok: false, running: false, packs: [], error: 'QQ 桥接未运行，无法读取语音包状态', code: 'VOICE_BRIDGE_DOWN' };
+    try {
+      const r = await callBridge('/api/voice/packs', { timeoutMs: 8000 });
+      const packs = Array.isArray(r?.data?.packs) ? r.data.packs : [];
+      const running = packs.find((p) => p.running) || null;
+      return { ok: true, running: Boolean(running), id: running?.id || '', packs, bridge };
+    } catch (error) {
+      return { ok: false, running: false, packs: [], bridge, error: `读取语音包状态失败：${String(error?.message ?? error).slice(0, 160)}`, code: 'VOICE_STATUS_FAILED' };
+    }
+  }
+
+  async function launchStatus() {
+    const bridge = await bridgeStatus().catch((error) => ({ running: false, error: String(error?.message ?? error) }));
+    let voice = { ok: false, running: false, packs: [], id: '', error: bridge.running ? '' : 'QQ 桥接未运行' };
+    if (bridge.running) voice = await voicePacksSnapshot();
+    const pet = petService.status();
+    return {
+      qq: {
+        running: Boolean(bridge.running),
+        ok: Boolean(bridge.running && bridge.ok !== false),
+        port: bridge.port ?? null,
+        pid: bridge.pid ?? bridge.lockPid ?? null,
+        snowluma: bridge.snowluma ?? null,
+        lastError: bridge.error ?? null,
+      },
+      bili: {
+        running: Boolean(scheduler && schedulerStatus.running),
+        lastError: schedulerStatus.lastError ?? null,
+        reason: schedulerStatus.reason ?? '',
+      },
+      pet: {
+        running: Boolean(pet.running),
+        installed: Boolean(pet.installed),
+        pid: pet.pid ?? null,
+        lastError: pet.lastError ?? null,
+      },
+      voice: {
+        ok: voice.ok !== false,
+        running: Boolean(voice.running),
+        id: voice.id || '',
+        installed: (voice.packs ?? []).filter((p) => p.installed).map((p) => p.id),
+        packs: (voice.packs ?? []).map((p) => ({ id: p.id, installed: Boolean(p.installed), running: Boolean(p.running), name: p.name || p.id })),
+        lastError: voice.error || null,
+      },
+    };
+  }
+
+  function launchItem(id, ok, extra = {}) {
+    return { id, label: LAUNCH_LABELS[id] || id, ok: ok !== false, ...extra };
+  }
+
+  async function startComponent(id, opts = {}) {
+    try {
+      if (id === 'qq') {
+        if (!platformStartEnabled('qq')) {
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「启动 QQ」并保存' });
+        }
+        const status = await bridgeStatus();
+        const stale = bridgeStaleReason(status);
+        const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
+        const snowluma = await launchSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        const bridgeOk = bridge?.ok !== false;
+        const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
+        return launchItem(id, bridgeOk && snowOk, {
+          message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
+          code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
+          error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
+          hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
+          detail: { bridge, snowluma },
+        });
+      }
+      if (id === 'bili') {
+        if (!platformStartEnabled('bili')) {
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'B站 启动开关已关闭', hint: '去「B站」页打开「启动 B站」并保存' });
+        }
+        const state = startSchedulerNow();
+        return launchItem(id, state.running === true, {
+          code: state.running ? '' : 'BILI_START_FAILED',
+          error: state.running ? '' : `B站生物钟未启动：${state.reason || state.lastError || '未登录或配置缺失'}`,
+          hint: state.running ? '' : '先在「B站」页完成扫码登录；仍失败看插件日志',
+          detail: state,
+        });
+      }
+      if (id === 'pet') {
+        const result = await petService.start();
+        return launchItem(id, result?.ok !== false, {
+          code: result?.ok === false ? 'PET_START_FAILED' : '',
+          error: result?.ok === false ? (result.error || '桌宠启动失败') : '',
+          hint: result?.ok === false ? (result.hint || '先在「桌宠」页安装桌宠/Electron') : '',
+          detail: result,
+        });
+      }
+      if (id === 'voice') {
+        const bridge = await bridgeStatus().catch(() => ({ running: false }));
+        if (!bridge.running) {
+          return launchItem(id, false, { code: 'VOICE_BRIDGE_DOWN', error: '语音包由 QQ 桥接托管，桥接未运行', hint: '同时勾选「QQ（含 SnowLuma）」或先启动 QQ' });
+        }
+        const packs = await voicePacksSnapshot();
+        const wanted = String(opts.voicePack === 'voice-cloud' ? 'voice-cloud' : 'voice-local');
+        const pack = (packs.packs ?? []).find((p) => p.id === wanted);
+        if (!pack) return launchItem(id, false, { code: 'VOICE_PACK_UNKNOWN', error: `未知语音包：${wanted}`, hint: '在「语音」页确认包 ID' });
+        if (!pack.installed) return launchItem(id, false, { code: 'VOICE_PACK_NOT_INSTALLED', error: `${pack.name || wanted} 还没安装`, hint: '先在「语音」页导入离线包或安装语音包' });
+        const r = await callBridge('/api/voice/packs/activate', { method: 'POST', body: { id: wanted }, timeoutMs: 90_000 });
+        const data = r?.data ?? {};
+        return launchItem(id, r?.ok !== false && data.ok !== false, {
+          code: data.ok === false ? 'VOICE_START_FAILED' : '',
+          error: data.ok === false ? (data.error || '语音包启动失败') : '',
+          hint: data.ok === false ? (data.hint || '检查语音包是否装好、端口 8765/8767 是否被占用') : '',
+          detail: { packId: wanted, ...data },
+        });
+      }
+      return launchItem(id, false, { code: 'UNKNOWN_COMPONENT', error: `未知启动项：${id}` });
+    } catch (error) {
+      return launchItem(id, false, {
+        code: `${String(id).toUpperCase()}_START_FAILED`,
+        error: `${LAUNCH_LABELS[id] || id} 启动失败：${String(error?.message ?? error).slice(0, 300)}`,
+        hint: '看设置页状态/日志；修复后重试',
+      });
+    }
+  }
+
+  async function stopComponent(id, opts = {}) {
+    try {
+      if (id === 'qq') {
+        const r = await stopBridge();
+        return launchItem(id, r?.ok !== false, {
+          message: 'QQ 桥接已停止（SnowLuma 本体不会被本程序关闭）',
+          code: r?.ok === false ? 'QQ_STOP_FAILED' : '',
+          error: r?.ok === false ? (r.error || 'QQ 桥接停止失败') : '',
+          hint: r?.ok === false ? '看桥接日志/手动结束残留进程' : '',
+          detail: r,
+        });
+      }
+      if (id === 'bili') {
+        const r = stopSchedulerNow();
+        return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
+      }
+      if (id === 'pet') {
+        const r = await petService.stop();
+        return launchItem(id, r?.ok !== false, {
+          code: r?.ok === false ? 'PET_STOP_FAILED' : '',
+          error: r?.ok === false ? (r.error || '桌宠停止失败') : '',
+          hint: r?.ok === false ? '在「桌宠」页重试，或手动结束进程' : '',
+          detail: r,
+        });
+      }
+      if (id === 'voice') {
+        const bridge = await bridgeStatus().catch(() => ({ running: false }));
+        if (!bridge.running) return launchItem(id, true, { message: 'QQ 桥接未运行，语音包无需单独停止' });
+        const packs = await voicePacksSnapshot();
+        const running = (packs.packs ?? []).filter((p) => p.running);
+        if (!running.length) return launchItem(id, true, { message: '语音包本来就没在跑' });
+        const results = [];
+        for (const p of running) {
+          const r = await callBridge('/api/voice/packs/stop', { method: 'POST', body: { id: p.id }, timeoutMs: 30_000 });
+          results.push({ id: p.id, ok: r?.ok !== false && r?.data?.ok !== false, error: r?.data?.error || r?.error || '' });
+        }
+        const failed = results.find((x) => !x.ok);
+        return launchItem(id, !failed, {
+          code: failed ? 'VOICE_STOP_FAILED' : '',
+          error: failed ? (failed.error || `语音包 ${failed.id} 停止失败`) : '',
+          hint: failed ? '检查端口占用；必要时在「语音」页手动停止' : '',
+          detail: results,
+        });
+      }
+      return launchItem(id, false, { code: 'UNKNOWN_COMPONENT', error: `未知停止项：${id}` });
+    } catch (error) {
+      return launchItem(id, false, {
+        code: `${String(id).toUpperCase()}_STOP_FAILED`,
+        error: `${LAUNCH_LABELS[id] || id} 停止失败：${String(error?.message ?? error).slice(0, 300)}`,
+        hint: '看设置页状态/日志；必要时手动结束进程',
+      });
+    }
+  }
+
+  async function runLaunchAction(action, body) {
+    const ids = normalizeLaunchComponents(body.components);
+    if (!ids.length) {
+      return { ok: false, code: 'NO_COMPONENTS', error: '没有选择要启动/停止的项目', hint: '至少勾选一项', items: [], status: await launchStatus() };
+    }
+    const items = [];
+    // 停止时先停语音（它由 QQ 桥接托管），再停桥接；否则桥接先死，语音进程会变成孤儿。
+    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet'].filter((id) => ids.includes(id)) : ids;
+    for (const id of ordered) {
+      items.push(action === 'stop' ? await stopComponent(id, body) : await startComponent(id, body));
+    }
+    const status = await launchStatus();
+    return { ok: items.every((x) => x.ok), items, status };
+  }
+
   async function handleBridge(req, res) {
     if (req.method === 'GET') { json(res, 200, { ok: true, status: await bridgeStatus() }); return; }
     const body = JSON.parse(await readBody(req) || '{}');
@@ -2290,6 +2503,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         message: running ? 'B站生物钟本来就在跑' : (schedulerState.running ? 'B站生物钟已启动' : `B站生物钟未启动：${schedulerState.lastError ?? '看插件日志'}`),
         scheduler: schedulerState,
       });
+      return;
+    }
+    if (action === 'start-selected' || action === 'start-components') {
+      json(res, 200, await runLaunchAction('start', body));
+      return;
+    }
+    if (action === 'stop-selected' || action === 'stop-components') {
+      json(res, 200, await runLaunchAction('stop', body));
       return;
     }
     if (action === 'start-all') {

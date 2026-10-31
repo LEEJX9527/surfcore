@@ -2973,3 +2973,25 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 
 **验证**：`plugins/surfcore npm test`（test-updates-voice 钉住不再登记 surfvoice 组件 +
 语音页说明）；`npm run test:audit` 89/89。
+
+## #92（2026-10-31）一键启动只覆盖 QQ/B站，桌宠/语音各自为政，且没有一键停止
+
+**现象**：概览「一键启动」只拉 QQ/B站；桌宠/语音要去各自页启动；没有统一停止；
+切换页面时状态来源分散，用户不确定“到底启没启”。
+
+**根因**：
+- `start-all` 只处理 `platforms.start.{qq,bili}`，桌宠/语音不在同一编排里；
+- 语音启动依赖 QQ 桥接，但没有明确依赖报错；
+- 没有 `stop-selected`；停止顺序也没有考虑“语音由桥接托管”。
+
+**修法**：
+- 概览改为多选 `QQ（含 SnowLuma）/ B站 / 桌宠 / 语音`，语音加本地/云端单选；
+- `start-selected` / `stop-selected` 每项返回 `ok/code/error/hint`；
+- `overview.launch` 统一 `bridgeStatus / schedulerStatus / petService / /api/voice/packs`；
+- 停止顺序：语音→QQ→B站→桌宠；QQ 停止不关闭 SnowLuma 本体；
+- 失败行 + toast + `lastError` 状态行，不静默。
+
+**未做**：真实进程启停手测、语音页深链、SnowLuma 本体停止（设计边界）。
+
+**验证**：`plugins/surfcore/scripts/test-platform-start-host.mjs`（结构化失败/空选择/停止幂等）、
+`test-client-contract.mjs`（按钮/多选/语音分支）；`npm run test:audit` 90/90。

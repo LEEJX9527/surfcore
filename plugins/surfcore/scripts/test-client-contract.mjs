@@ -156,25 +156,23 @@ for (const action of ['purpose-status', 'purpose-preview', 'purpose-run']) {
 
 // 平台启动开关（2026-10-24 用户要求：不是所有用户都想同时开 QQ / B站）：
 //   · QQ / B站 页各一个「是否启动」开关，写合体层 platforms.start.{qq,bili}；
-//   · 概览的启动卡只留三个动作：一键启动 / 启动QQ / 启动B站；
+//   · 概览启动卡整合成「一键启动 SurfCore / 一键停止（全部）」：
+//     多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；语音有本地/云端分支；
 //   · 人格卡不再在概览重复显示（统一到「角色」页，和角色包在一起）。
 assert.ok(source.includes('function PlatformStartCard'), '缺少平台启动开关卡片');
 assert.ok(source.includes('"platforms", "start", "qq"'), 'QQ 启动开关没有绑定 platforms.start.qq');
 assert.ok(source.includes('"platforms", "start", "bili"'), 'B站 启动开关没有绑定 platforms.start.bili');
 assert.ok(source.includes('h(PlatformStartCard'), 'QQ / B站 页没有渲染启动开关卡片');
-for (const label of ['一键启动', '启动QQ', '启动B站']) {
-  // 「一键启动」按钮文案后面会跟（含 SnowLuma），按前缀认即可。
-  const ok = label === '一键启动'
-    ? source.includes('一键启动')
-    : (source.includes(`>${label}<`) || source.includes(`"${label}"`));
-  assert.ok(ok, `概览启动卡缺少按钮：${label}`);
+for (const label of ['一键启动 SurfCore', '一键停止（全部）', '语音分支']) {
+  assert.ok(source.includes(label), `概览启动卡缺少：${label}`);
 }
-for (const action of ['start-qq', 'start-bili']) {
-  assert.ok(source.includes(`act("${action}")`), `设置页没有调用 ${action}`);
+for (const action of ['start-selected', 'stop-selected']) {
+  assert.ok(source.includes(`"${action}"`), `设置页没有调用 ${action}`);
   assert.ok(pluginIndexSource.includes(`action === '${action}'`), `插件代理缺少 ${action} 动作`);
 }
-assert.ok(!source.includes('启动与人格卡'), '概览不应再出现「启动与人格卡」旧标题');
-assert.ok(!source.includes('一键启动全部（含 SnowLuma）'), '旧的「一键启动全部」按钮应被替换成三个按钮');
+assert.ok(source.includes('voiceBranch'), '语音缺少本地/云端分支选择');
+assert.ok(source.includes('start-qq') || source.includes('start-selected'), '概览缺少启动入口');
+assert.ok(!source.includes('一键启动（含 SnowLuma）'), '旧的一键启动按钮应被整合');
 assert.ok(!source.includes('随 DSH 启动自动拉起 QQ 桥接'), '旧 bridge.autoStart 开关应迁到 QQ 页的「是否启动」');
 assert.ok(source.includes('去 QQ 页改启动开关') && source.includes('去 B站 页改启动开关'), '概览缺少去平台页改开关的入口');
 assert.ok(source.includes('人格卡在「角色」页维护'), '概览移除人格卡后缺少指路文案');

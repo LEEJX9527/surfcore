@@ -4,6 +4,18 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [0.7.21] - 2026-10-31
+
+### 新增（一键启动 SurfCore + 一键停止）
+
+- 概览启动按钮改为「一键启动 SurfCore」：多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；
+- 语音加本地/云端单选（voice-local / voice-cloud），未安装的选项标“未安装”；
+- 新增「一键停止（全部）」：语音→QQ→B站→桌宠；QQ 停止不关闭 SnowLuma 本体；
+- 每项独立返回 ok/code/error/hint，界面逐项显示成功/失败/建议；`overview.launch` 统一状态，
+  QQ/B站/桌宠/语音页读同一后端；
+- 空选择、平台开关关闭、桥接未运行、语音包未安装等都有结构化错误与下一步。
+
+
 ## [0.7.20] - 2026-10-31
 
 ### 修复（SnowLuma 断线时主动唤醒空烧 token）

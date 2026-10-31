@@ -9,8 +9,8 @@
 
 ### 当前事实
 
-- **HEAD**：`44bae2d fix(updates): 语音包退出 zip 自动更新`（0.7.19 后）
-- **package.json version**：`0.7.19`（编辑会话未改版本）
+- **HEAD**：`282dc6c feat(launch): 一键启动/停止整合`（0.7.20 后）
+- **package.json version**：`0.7.20`（编辑会话未改版本）
 - **工作区**：干净（`git status --porcelain` 无输出）
 - 本会话上一段（10-29）的离线导入、中文路径、管理员称呼修复均已进 v0.7.0–v0.7.4。
 
@@ -56,18 +56,26 @@
 - 语音页加说明：需要新版本时用「重新导入离线包」，导入保留 config/venv/models/vendor；
 - `test-updates-voice` 钉住“不再登记语音包 + 页面说明”。
 
+### 本次新增（2026-10-31，0.7.20 后）
+
+- **一键启动 SurfCore + 一键停止**：概览多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；
+  语音加本地/云端单选；每项独立 `ok/code/error/hint`；
+- `start-selected` / `stop-selected`；停止顺序语音→QQ→B站→桌宠；
+  QQ 停止不关闭 SnowLuma 本体；`overview.launch` 统一状态供各页读取；
+- 新增 `test-launch-components` + 扩展 `test-platform-start-host` / `test-client-contract`。
+
 ### 已验证（本会话，2026-10-30）
 
-- `npm run test:audit` → **89/89**（新增 test-snowluma-channel-gate）；
-- `test-plugin-compat` / `test-gate-events` / `test-snowluma-channel-gate` → 通过（工具拒绝、压缩接管、L0–L3、断开/暂停不创建 DSH 会话）。
+- `npm run test:audit` → **90/90**（新增 test-snowluma-channel-gate / test-launch-components）；
+- `test-plugin-compat` / `test-gate-events` / `test-snowluma-channel-gate` / `test-launch-components` → 通过。
 - `plugins/surfcore npm test` → **全绿**；
 - 本次新增 `test-plugin-compat` / `test-gate-events`；并修了 3 个 0.7.5 blocked 语义后的过时夹具（`test-updates-version/pending/voice`）。
 
 ### 没验证 / 当前待办
 
 - **v0.7.18 的 B站 扫码/登录核查/长 UID 没有在本会话逐项实机复测**；以发布说明和发布会话验证为准。
-- **插件体检按钮/L2-L3 安全弹窗/SnowLuma 断线提示还没有在真实设置页点过**；
-  真实回合 cancel、SnowLuma 断线零 token 增长需重启 DSH 后手测。
+- **一键启动/停止、插件体检、L2-L3 弹窗、SnowLuma 断线提示还没有在真实设置页点过**；
+  真实进程启停、真实回合 cancel、SnowLuma 断线零 token 增长需重启 DSH 后手测。
 - **语音离线包导入 UI 仍没在真实设置页点过**（确认框/错误弹窗/删源/删备份）；真实 7.9G 导入已跑通。
 - 语音包许可仍未定：piper GPL、huayan 数据集、age12 微调权重；候选包在 `D:\surfcore-poc\release\`，
   **不要当公开包直接上传**。
