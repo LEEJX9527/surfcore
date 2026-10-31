@@ -9,10 +9,50 @@
 
 ### 当前事实
 
-- **HEAD**：`c7df162 feat(telemetry): Phase 0A 遥测`（0.7.22 后）
+- **HEAD**：`68dc2b7 chore(release): 同步限制去重清单`
 - **package.json version**：`0.7.22`（编辑会话未改版本）
 - **工作区**：干净
 - 本会话上一段（10-29）的离线导入、中文路径、管理员称呼修复均已进 v0.7.0–v0.7.4。
+
+### 本轮全部优化（2026-10-31 21:10）
+
+- 交接块见 `docs/RELEASE-QUEUE.md` 顶部「本轮全部优化交接」；
+- 范围：账单/群分层/人格语气/工具快照+profile/UI 分类搜索/会话审计/记忆卡/限制失败可见性；
+- audit 107/107；plugins/surfcore npm test 通过；manifest verify 0；
+- 重启 DSH + QQ 桥接；默认 balanced；
+
+### 本次新增（2026-10-31 15:55，第二轮收紧）
+
+- 第二轮样本 117 唤醒 / 13 发送 / 104 close-only，暴露 strict direct 仍有漏口；
+- 只认真正的 @昵称/引用自己；裸昵称、owner、fish bypass 不再绕过每日配额；
+- 需要再次重启桥接验证；audit 99/99。
+
+### 本次新增（2026-10-31 13:55，hotfix）
+
+- **question 不再绕过每日配额**：新增 `src/wake-policy.js`；
+- 只有 @/名字/拍一拍/私聊/管理员算 hard direct；
+- question 仍可唤醒，但受 20 次/日 + 2 分钟间隔；
+- 一小时样本：138 唤醒、15 发送、116 close-only；两个群占 129 唤醒。
+- 需要重启桥接生效；audit 99/99。
+
+### 本次新增（2026-10-31 12:40，Phase 4 后）
+
+- **A+B 账单**：每个角色包 + 每个 QQ 群/私聊一份 Markdown；
+- 位置：`~/.dsh/surfcore/billing/{index.md,characters/*,conversations/*}`；
+- 数据：token 账本 + 遥测；启动 30 秒后生成、每 10 分钟刷新；手动 `node scripts/billing-report.mjs`；
+- 归因：群/私聊精确；单角色历史全归当前角色；多角色无遥测标未归因；
+- 群内个人不精确分摊；不记录正文；不调用模型。
+
+### 本次新增（2026-10-31 11:30，0.7.23 后，Phase 1A）
+
+- **调用链重建（只读）**：
+  - bridge 投递 wake 时生成 `wakeId`，QQ 会话事件带 `wakeId` 写入遥测；
+  - `context-call-chain-report.mjs` 去重 bridge/plugin，重建 `wake → turn/step → tool`；
+  - 48 wake 样本：close-only 26 次、send→close 10 次、backlog 7 次 ¥0.933、
+    delivered 17/48；model calls/wake p50=2/p90=4/p99=11。
+- 未改 close/wait/send、调用上限、唤醒合并、调度；下一步先语义复核
+  close-only / keyword / backlog / question 错误。
+- 测试：`test-context-call-chain`；audit **95/95**。
 
 ### 本次新增（2026-10-31 10:15，0.7.22 后，Phase 0A）
 

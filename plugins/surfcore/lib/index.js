@@ -93,6 +93,8 @@ import { summarizeQqFishGuard } from './qq-fish-guard.js';
 import { applySessionPermission } from './scheduler.js';
 import { fileStamp, isStale } from '../../../src/config-stamps.js';
 import { createContextTelemetry } from '../../../src/context-telemetry.js';
+import { createBillingService } from './billing.js';
+import { createPersonaClassifier } from './persona-classify.js';
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -232,6 +234,16 @@ export function apply(ctx) {
     source: 'plugin',
     log: (message) => pluginLog(message),
   });
+  // A+B 账单：每 10 分钟刷新到 ~/.dsh/surfcore/billing；只读，不调用模型。
+  const personaClassifier = createPersonaClassifier({ ctx, log: (message) => pluginLog(message), tokenBudget });
+
+  const billing = createBillingService({
+    stateDir: STATE_DIR,
+    qqRoot: QQBOT_ROOT,
+    readCurrentCharacter,
+    log: (message) => pluginLog(message),
+  });
+  billing.start();
 
   const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
@@ -312,8 +324,9 @@ export function apply(ctx) {
       sessionEventOff = ctx.on('session/event', (session, event) => {
         try { tokenBudget.ingestEvent(session, event); }
         catch (error) { pluginLog('token 用量采集失败：', String(error?.message ?? error).slice(0, 160)); }
-        try { contextTelemetry.ingestEvent(session, event); }
-        catch (error) { pluginLog('上下文遥测失败：', String(error?.message ?? error).slice(0, 160)); }
+        try {
+          if (tokenBudget.isTrackedSession(session)) contextTelemetry.ingestEvent(session, event);
+        } catch (error) { pluginLog('上下文遥测失败：', String(error?.message ?? error).slice(0, 160)); }
       });
     }
   } catch (error) {
@@ -734,6 +747,7 @@ export function apply(ctx) {
         allowLaunch: snow.allowLaunch === true,
         downloadUrl: String(snow.downloadUrl ?? 'https://github.com/SnowLuma/SnowLuma/releases/latest'),
         detected: findSnowLumaInstall().ok,
+        everConnected: bridge?.snowluma?.everConnected === true,
         diagnosis: snowDiag,
       },
       mode: {
@@ -1044,6 +1058,93 @@ export function apply(ctx) {
   }
 
   // ── 人设卡 ──────────────────────────────────────────────────────────────
+  async function handleGroupPolicy(req, res) {
+    try {
+      if (req.method === 'GET') {
+        const r = await callBridge('/api/socialV2/group-policy');
+        if (!r.ok) {
+          json(res, 502, { ok: false, code: 'GROUP_POLICY_BRIDGE', error: r.error || '桥接不可用', hint: '先启动 QQ 桥接，再刷新设置页' });
+          return;
+        }
+        json(res, 200, r.data);
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        const r = await callBridge('/api/socialV2/group-policy', { method: 'POST', body });
+        if (!r.ok) {
+          json(res, 502, { ok: false, code: 'GROUP_POLICY_SAVE', error: r.error || '保存失败', hint: '检查桥接是否运行，再重试' });
+          return;
+        }
+        json(res, 200, r.data);
+        return;
+      }
+      json(res, 405, { ok: false, code: 'GROUP_POLICY_METHOD', error: '只支持 GET/POST' });
+    } catch (error) {
+      json(res, 400, { ok: false, code: 'GROUP_POLICY_FAILED', error: String(error?.message ?? error), hint: '检查桥接与配置' });
+    }
+  }
+
+  async function handlePersonaClassify(req, res) {
+    if (req.method !== 'POST') {
+      json(res, 405, { ok: false, code: 'PERSONA_CLASSIFY_METHOD', error: '只支持 POST', hint: '用角色页的「智能拆分」按钮' });
+      return;
+    }
+    try {
+      const body = JSON.parse(await readBody(req) || '{}');
+      let text = String(body.text ?? '');
+    if (layer === 'daily') text = withDailyIdentity(text);
+      const drafts = await personaClassifier.classify(text);
+      drafts.daily = withDailyIdentity(drafts.daily);
+      json(res, 200, { ok: true, drafts, note: '这是草稿；请检查/编辑后逐层保存。' });
+    } catch (error) {
+      json(res, 400, {
+        ok: false,
+        code: String(error?.code || 'PERSONA_CLASSIFY_FAILED'),
+        error: String(error?.message ?? error),
+        hint: String(error?.code || '').includes('UNAVAILABLE')
+          ? '确认 DSH 模型服务已就绪；也可以手动填写各层'
+          : '检查人格卡内容，或手动填写各层',
+      });
+    }
+  }
+
+  function personaIdentityLine() {
+    const cur = readCurrentCharacter();
+    const name = String(cur?.name || '').trim() || '这个角色';
+    let admin = {};
+    try {
+      const unified = readUnified();
+      const qq = readQqConfig();
+      admin = adminSummary(unified?.config?.admin ?? qq?.config?.admin);
+    } catch {}
+    const owner = String(admin?.displayName || '').trim() || '主人';
+    return `你是${name}；你的主人是${owner}。`;
+  }
+
+  function withDailyIdentity(text, identity = personaIdentityLine()) {
+    const body = String(text ?? '').trim();
+    if (!body) return identity;
+    if (body.includes(identity)) return body;
+    // 已有明确“我是谁/主人是谁”的旧日常也保留，不重复堆。
+    if (/你是|我是/.test(body) && /主人/.test(body)) return body;
+    return `${identity}
+
+${body}`;
+  }
+
+  async function handleLimitMute(req, res) {
+    if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'LIMIT_MUTE_METHOD', error: '只支持 POST' }); return; }
+    try {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const r = await callBridge('/api/socialV2/limit-mute', { method: 'POST', body });
+      if (!r.ok) { json(res, 502, { ok: false, code: 'LIMIT_MUTE_BRIDGE', error: r.error || '桥接不可用', hint: '先启动/重启 QQ 桥接' }); return; }
+      json(res, 200, r.data);
+    } catch (error) {
+      json(res, 400, { ok: false, code: 'LIMIT_MUTE_FAILED', error: String(error?.message ?? error), hint: '刷新错误报告后重试' });
+    }
+  }
+
   async function handlePersona(req, res) {
     const layerPaths = () => {
       const layers = activePersonaLayers();
@@ -1052,13 +1153,13 @@ export function apply(ctx) {
         daily: layers.daily,
         scenes: layers.scenes,
         scenesDir: layers.scenesDir,
-      } : { core: resolvePersonaFile(), daily: '', scenes: {}, scenesDir: '' };
+      } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
     };
     const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
     if (req.method === 'GET') {
       const paths = layerPaths();
       const core = readTextFile(paths.core);
-      const daily = paths.daily ? readTextFile(paths.daily) : '';
+      const daily = paths.daily ? withDailyIdentity(readTextFile(paths.daily)) : withDailyIdentity('');
       const scenes = {};
       for (const [id, file] of Object.entries(paths.scenes || {})) {
         scenes[id] = { path: file, text: readTextFile(file), chars: readTextFile(file).length };
@@ -1077,7 +1178,7 @@ export function apply(ctx) {
         },
         sceneLabels,
         backups,
-        note: '人格卡分层：persona.md 是核心；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
+        note: '人格卡分层：persona.md 是核心；persona.tone.md 是语气；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
       });
       return;
     }
@@ -1091,6 +1192,7 @@ export function apply(ctx) {
       let target = paths.core;
       let label = 'persona';
       if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
+      else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
       else if (name.startsWith('persona-scene-')) {
         const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
         if (!scene) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: '备份对应的场景未知', hint: '检查备份文件名' }); return; }
@@ -3200,6 +3302,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
     if (pathname === `${API_PREFIX}/persona`) { await handlePersona(req, res); return; }
+    if (pathname === `${API_PREFIX}/limit-mute`) { await handleLimitMute(req, res); return; }
+    if (pathname === `${API_PREFIX}/persona/classify`) { await handlePersonaClassify(req, res); return; }
+    if (pathname === `${API_PREFIX}/group-policy`) { await handleGroupPolicy(req, res); return; }
     if (pathname === `${API_PREFIX}/memory`) { await handleMemory(req, res, url); return; }
     if (pathname === `${API_PREFIX}/watch-history`) { handleWatchHistory(res, url); return; }
     if (pathname === `${API_PREFIX}/preferences/scan`) {
@@ -3350,6 +3455,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
     try { sessionEventOff?.(); } catch {}
+    try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
     try { closeAllQrLogins(); } catch {}

@@ -3069,3 +3069,94 @@ B站/桌宠被迫读 QQ 规则；核心和日常没有边界。
 - **修法**（0.7.23）：close 加 15 秒去抖窗口；open 时 `ackByDedupe` 自动确认旧断线事件；
   文案改为“恢复前跳过主动唤醒”；UI 在 connected=true 时过滤并自动确认旧事件。
 - **教训**：断线是事件、不可用是状态；告警要看状态并带去抖，恢复要结掉旧事件。
+
+## #95（2026-10-31）只看工具频率会误判 close：它同时改已读/收尾/唤醒安全
+
+**现象**：`qq_close_conversation` 65 次，占工具调用 40%，容易被当成“可直接自动化的收尾”。
+
+**根因**：
+- `closeConversationV2` 不只是“关闭”：它还做 closure gate、按 throughSeq 标已读、
+  写 closure 记录（summary/nextOpening/cooldown）、清 noAction、ensureWakeable、取消 replyCheck；
+- 模型还要提供 summary/nextOpening 语义；
+- 只看调用次数，看不到 close-only / send→close / close 被 gate 拒绝的差异。
+
+**修法（Phase 1A，只读）**：
+- bridge 在真正投递 wake 时生成 wakeId，并把 QQ 会话事件写入带 wakeId 的遥测；
+- 新增 `context-call-chain-report.mjs`：bridge/plugin 去重，按 wakeId 重建路径；
+- 报告 delivered / closed / observedOnly / 成本 / 每 wake 模型调用数；
+- 不自动 close、不合并、不设统一上限。
+
+**数据（48 wake 样本）**：close-only 26 次/52 调用/¥0.699；send→close 10 次；
+delivered 17 次（¥1.80），未交付 31 次（¥0.89）；keyword 12 次 0 交付；backlog 7 次 ¥0.933。
+
+**结论**：先语义复核 close-only / keyword / backlog / question 错误，再决定动作包；
+不能靠调用频率直接删 close。
+
+**验证**：`test-context-call-chain.mjs`；`npm run test:audit` 95/95。
+
+## #96（2026-10-31）重启补唤醒硬编码 5 个会话，backlog 冷启动最贵
+
+**现象**：Phase 1A 样本里 backlog 7 次唤醒 ¥0.933，明显高于普通唤醒；启动时一次最多叫醒 5 个会话。
+
+**根因**：
+- `wakeBacklogConversations` 硬编码 `slice(0, 5)`；
+- 每次冷启动都要重新建立上下文/缓存，backlog 的交付率又低（样本 1/7）；
+- 没有可配置上限。
+
+**修法**：
+- 新增 `socialV2.wake.backlogMaxSessions`，默认 **3**，范围 1~20；
+- 只取未读最多的前 N 个；其余保留 unread，等下一轮/自然唤醒；
+- 设置页高级设置可调；
+- 不合并不同会话上下文，不删消息。
+
+**验证**：`test-backlog-cap.mjs`；`npm run test:audit` 96/96（待跑）。
+
+## #97（2026-10-31）账单不能按群友精确分摊
+
+**现象**：想做“每个用户一份精确 token 账单”，但群聊一次模型调用是整群共享上下文，无法精确归到某个群友。
+
+**修法**：
+- 做 A+B：每个角色包、每个 QQ 群/私聊；
+- 私聊账单精确到人；群账单只到群；
+- 群友个人不做精确分摊，最多后续做“触发/参与”估算并标注；
+- 账单不记录消息正文。
+
+**验证**：`test-billing-report` / `test-billing-service`。
+
+## #98（2026-10-31）question 被当成 direct，绕过每日唤醒上限
+
+**现象**：一小时样本 138 次唤醒，一个群 75 次（65 次 question），只有 15 次发送；close-only 116 次。
+
+**根因**：
+- `isDirectedAtAi()` 把“你+吗/呢/怎么”等普通群聊当成在问 AI；
+- `directWake` 把 question 当 direct；
+- direct 绕过 `maxWakesPerDay=20` 和 2 分钟间隔，导致无限唤醒。
+
+**修法**：
+- 新增 `src/wake-policy.js`：只有 @/名字/拍一拍/私聊/管理员可绕过；
+- question 仍可唤醒，但受每日配额；
+- unread 严格 direct 只认 owner/引用自己/真实 @ 或昵称。
+
+**验证**：`test-wake-policy`；`npm run test:audit` 99/99。
+
+## L3「同一工具和错误反复出现」被业务拒绝误触发
+
+- **现象**：QQ 里突然提示本轮被停止，事件是 turn-guard，看日志才知道是 `qq_close_conversation` 被拒 3 次。
+- **根因**：止血把所有工具错误都当"重试循环"计数，业务拒绝（自带下一步）也被计入。
+- **修法**（0.7.24）：`isExpectedToolError()` 排除收尾失败/白名单/参数/限流等预期拒绝；
+  环境错误仍按阈值停轮；L3 弹窗显示工具/错误/会话。
+- **教训**：错误要先分类再决定是否止血；业务拒绝 ≠ 环境故障。
+
+## #99（2026-10-31）全局收紧 question，把小群也误伤
+
+**现象**：为了解决大群 75 次/小时唤醒，把 question 全局改成不绕过每日配额；小群朋友群的积极唤醒也被压掉。
+
+**根因**：大群/小群需要不同策略，不能用一个全局闸门。
+
+**修法**：
+- 新增 `src/group-policy.js`：成员数/近10分钟消息/手动覆盖 → 小群/大群；
+- 小群恢复原积极唤醒；大群只保留 @/名字/拍一拍/私聊/管理员；
+- 设置页 QQ → 群分层显示人数、活跃、自动判定、强制覆盖；
+- 人格拆出 `persona.tone.md`；群聊 `qq_get_prompt` 默认 tone，核心按需 full。
+
+**验证**：`test-group-policy`、`test-persona-layers`、`test-persona-classify`、`npm run test:audit`。

@@ -4,6 +4,121 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [0.8.0] - 2026-10-31
+
+### 记忆卡手动操作修复
+
+- 修复 MemoryCardPanel act 引用不存在的 item.staged；
+- toast 文案不再阻断 reload；服务端成功后界面会刷新。
+
+### 限制失败可见性
+
+- 同一限制 1 小时只提醒一次（持久化）；
+- 概览可「永久不再显示」某个限制 code。
+
+- 发送频率超限返回具体设置/当前值/上限/路径；
+- 概览错误报告展示 L1 限制提醒，可去改设置或确认本限制；
+- 鱼群/Token 发送上限也写 L1。
+
+### 会话映射审计
+
+- 启动时检测多个 QQ 会话共用同一 sessionId，删除重复映射并重建独立会话。
+- 新会话写可辨认标题（QQ 聊天 · group:...）。
+- gate event session-map-duplicate。
+
+### 群管理保存修复
+
+- group-policy POST 兼容已解析对象，修复 500。
+- 强制大群/小群选择即保存。
+
+### 设置页区域按钮化
+
+- 高级设置里的参数组改为按钮 + 弹窗编辑，弹窗内保存；
+- 群管理移入高级设置，不再占 QQ 页顶部；
+- 鱼群保护/对话收尾收成按钮；顶部卡片不变。
+
+### SnowLuma 启动告警
+
+- 未启动 SnowLuma 时不再弹“断线”L2；只有本次进程真正连过、再断开才告警；
+- `/api/status` 与 overview 带 `everConnected`，UI 据此显示。
+
+### 工具快照 / 工具面 / step guard / close 幂等
+
+- 新增 `qq_get_context_snapshot`：一次读取 unread/recent/social/activeMembers，默认 caps + truncated + refs；
+- 新增 `src/context-snapshot.js` 纯函数；
+- `qq_get_prompt` 默认只返回 role/wake/memory，stickers/slang/closure/voices 需显式 sections；
+- 新增 `socialV2.toolProfile`：full / balanced / compact；默认 balanced（关闭 snapshot 时回 full）；
+- close 在最近发送失败时返回 `CLOSE_AFTER_SEND_FAILED`，禁止假装成功后收尾；
+- preset 引导优先 `qq_get_context_snapshot`；
+- turn-guard 改为按 assistant step 计数，同一步多个 tool call 不重复计；
+- `src/action-planner.js` 第一版：close 幂等，杜绝重复收尾；
+- 新增测试：snapshot、action planner；audit 103/103。
+
+### 群分层 / 人格语气 / 智能拆分
+
+- 新增 `src/group-policy.js`：小群积极，大群/高活跃群收紧；成员数自动识别 + 手动覆盖；
+- 设置页 QQ → 群分层：人数、近10分钟消息、自动判定、强制小群/大群；面板提示人数过多/活跃会大大加快 Token 消耗；
+- 人格新增 `persona.tone.md` 语气层；群聊 `qq_get_prompt` 默认 tone，不加载核心；
+- 私聊/必要判断可 `mode=full` 显式加载核心；
+- 角色页一页四层（不再 tab），写法提示 + 保存全部；
+- 拆分只出预览草稿，空白保留原文；身份底座（我是谁/主人是谁）在 tone/full/日常都带；
+- 场景说明包含 B站等其他平台 + 跨平台隐私警告；
+- 载入人格卡后「智能拆分当前人格」：模型返回 core/tone/daily/scenes 草稿，用户编辑并逐层保存；
+- 失败路径结构化：群分层/拆分接口均带 code + hint；拆分失败自动 JSON-only 重试一次，并带输出预览。
+
+### 修复（question 触发绕过每日唤醒配额）
+
+- 新增 `src/wake-policy.js`：只有 @/名字/拍一拍/私聊/管理员算 hard direct；
+- `question` 不再绕过 `maxWakesPerDay` / 最小间隔；
+- unread 的严格 direct 只认引用自己/真实 @；裸昵称、owner、fish bypass 不再绕过每日配额；
+- 修复一小时样本中“普通群聊你…吗”被无限唤醒的问题。
+
+### 新增（A+B Token 账单 Markdown）
+
+- 每个角色包一份 `characters/<id>/summary.md`；
+- 每个 QQ 群/私聊一份 `conversations/<key>.md`；
+- 含总览、按天、唤醒原因/遥测成本、工具、交付延迟、最贵回合；
+- 插件启动 30 秒后生成、每 10 分钟刷新；不调用模型、不记录正文；
+- 群内个人成本不精确分摊，只到群/私聊。
+
+### 新增（Phase 4：调用链交付延迟/成本验收）
+
+- 调用链报告新增 `deliveredLatency`（wake 到第一次发送的 P50/P90/avg）和
+  `avgCostDelivered`（每次有发送的唤醒平均成本）；
+- 新增 `review.closeOnly` / `review.noSendByReason`，按原因看未发送分布；
+- 只读指标；**不改 reasoningEffort、不改模型、不加统一调用上限**；
+- 原因：没有成功回复/漏回复指标前，直接降思考强度可能省 token 但变笨。
+
+### 新增（Phase 3：启动补唤醒限量）
+
+- `socialV2.wake.backlogMaxSessions` 默认 **3**（原硬编码 5），范围 1~20；
+- 启动补唤醒只取未读最多的前 N 个会话，其余保留 unread 等自然唤醒；
+- 设置页高级设置可调；不合并不同会话上下文、不删消息。
+
+### 新增（Phase 1A：调用链重建，只读）
+
+- bridge 在真正投递 wake 时生成 `wakeId`，并把 QQ 会话事件写入带 `wakeId` 的遥测；
+- 新增 `scripts/context-call-chain-report.mjs`：bridge/plugin 去重，重建
+  `wake → turn/step → tool` 路径，统计 delivered/closed/成本/每 wake 模型调用数；
+- 不自动 close、不合并唤醒、不设统一调用上限；
+- 样本：48 wake，close-only 26 次，send→close 10 次，backlog 7 次 ¥0.933。
+
+### 修复（L3「同一工具和错误反复出现」被业务拒绝误触发）
+
+- `turn-guard` 新增 `isExpectedToolError()`：收尾失败 / 不能 / 请先 / 白名单 / 未授权 / 参数 /
+  格式 / 限流 / 未开启等**预期内的业务拒绝不再计入重复错误止血**；连接失败、超时等环境错误仍按阈值停轮；
+- L3 安全提醒弹窗补充 **工具 / 错误摘要 / 会话**，不再只有泛化文案。
+
+### 修复（明明连着 SnowLuma 仍弹「发送通道断开」，且每次打开设置页都弹）
+
+- `close` 加 **15 秒观察窗口**：瞬时断开（1006 抖动/启动）在窗口内重连成功就不记 L2；
+- 恢复（`open`）时 `gateEvents.ackByDedupe('snowluma:send-channel-down')` **自动确认旧告警**，
+  不再每次打开设置页都弹同一个 L2；
+- 文案从“自动唤醒已暂停”改为“通道恢复前会自动跳过主动唤醒”（暂停由连续发送失败触发）；
+- 设置页加载提醒时，若当前 SnowLuma 已连接，过滤并自动确认旧的 `send-channel-down`；
+  概览未就绪时先不弹，避免误弹一次。
+
+
 ## [0.7.23] - 2026-10-31
 
 ### 新增（Phase 0A：上下文/成本遥测，只测量）
@@ -26,17 +141,6 @@
 - `/persona` 支持逐层读写与按层备份恢复；快照/回档带三层；
 - 旧角色没有日常/场景文件时行为与旧版一致。
 
-
-## [Unreleased]
-
-### 修复（明明连着 SnowLuma 仍弹「发送通道断开」，且每次打开设置页都弹）
-
-- `close` 加 **15 秒观察窗口**：瞬时断开（1006 抖动/启动）在窗口内重连成功就不记 L2；
-- 恢复（`open`）时 `gateEvents.ackByDedupe('snowluma:send-channel-down')` **自动确认旧告警**，
-  不再每次打开设置页都弹同一个 L2；
-- 文案从“自动唤醒已暂停”改为“通道恢复前会自动跳过主动唤醒”（暂停由连续发送失败触发）；
-- 设置页加载提醒时，若当前 SnowLuma 已连接，过滤并自动确认旧的 `send-channel-down`；
-  概览未就绪时先不弹，避免误弹一次。
 
 ## [0.7.22] - 2026-10-31
 

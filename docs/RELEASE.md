@@ -47,11 +47,24 @@ cd D:\deepseekwork\surfcore
 git status --porcelain          # 必须干净，或有明确列出的待发文件
 git log --oneline -5            # 确认最近提交都是要发的
 node -e "console.log(require('./package.json').version)"   # 当前版本
-npm run test:audit              # 必须全绿（当前 94/94；新增/删除测试后同步这个数）
+npm run test:audit              # 必须全绿（当前 95/95；新增/删除测试后同步这个数）
 cd plugins/surfcore && npm test # 必须 0 失败
 ```
 
 然后向用户确认：**版本号 + 发布范围（哪些仓库）**。
+
+## 二·五、命名规则（2026-10-31 用户反馈）
+
+**GitHub Release 的 title 只写版本号，不带括号描述**：
+
+```
+✅ SurfCore v0.8.0
+❌ SurfCore v0.8.0（群分层 + 人格语气 + 智能拆分 + …）
+```
+
+- 具体改了什么写在 Release 的 **body** 与 CHANGELOG，不要塞进标题；
+- tag 名固定 `vX.Y.Z`；
+- 本地提交信息可以是 `release: vX.Y.Z`，不要堆功能清单。
 
 ## 三、发布步骤
 

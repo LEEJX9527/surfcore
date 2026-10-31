@@ -47,22 +47,45 @@ function section(id, label, text) {
  * @param {string} opts.core 核心
  * @param {string} [opts.scene] 场景
  * @param {string} [opts.daily] 日常
+ * @param {string} [opts.tone] 语气
+ * @param {string} [opts.identity] 身份底座（无论 tone/full 都带：我是谁、主人是谁）
+ * @param {'full'|'tone'} [opts.personaMode] full=核心+语气+场景+日常；tone=语气+场景+日常
  * @param {'v1'|'v2'} [opts.mode] 仿真模式；每层分别过滤 〔一代〕/〔二代〕小节
  * @param {number} [opts.maxChars] 总预算；<=0 不限
  * @param {string} [opts.sceneId] 场景 ID（用于标题）
  */
 export function composePersonaLayers({
-  core = '', scene = '', daily = '', mode = 'v2', maxChars = 6000, sceneId = '',
+  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
-  const selected = [
-    section('core', '人格核心', selectRoleText(core, mode)),
-    section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, selectRoleText(scene, mode)),
-    section('daily', '人格日常', selectRoleText(daily, mode)),
-  ].filter((x) => x.text);
+  const toneText = selectRoleText(tone, mode);
+  const sceneText = selectRoleText(scene, mode);
+  const dailyText = selectRoleText(daily, mode);
+  // tone 模式不加载核心；只有旧角色既没有语气也没有场景/日常时，才回退核心，避免“没卡”。
+  const identityText = String(identity ?? '').trim();
+  const identitySection = identityText ? [section('identity', '身份底座', identityText)] : [];
+  const selected = personaMode === 'tone'
+    ? [
+        ...identitySection,
+        section('tone', '人格语气', toneText),
+        section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, sceneText),
+        section('daily', '人格日常', dailyText),
+      ].filter((x) => x.text)
+    : [
+        ...identitySection,
+        section('core', '人格核心', selectRoleText(core, mode)),
+        section('tone', '人格语气', toneText),
+        section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, sceneText),
+        section('daily', '人格日常', dailyText),
+      ].filter((x) => x.text);
 
-  const counts = { core: 0, scene: 0, daily: 0 };
+  const counts = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
   const omitted = [];
+  if (!selected.length && personaMode === 'tone' && String(core ?? '').trim()) {
+    const fallback = selectRoleText(core, mode);
+    counts.core = fallback.length;
+    return { text: fallback, chars: fallback.length, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+  }
   if (!selected.length) return { text: '', chars: 0, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
 
   // 只有核心时保持旧行为：不额外加标题，避免旧角色卡注入内容发生变化。

@@ -188,6 +188,31 @@ const tests = [
   'test-persona-layers.mjs',
   // Phase 0A：遥测只读、模型调用去重、工具结果大小、报告聚合。
   'test-context-telemetry.mjs',
+  // Phase 1A：按 wakeId 归属、bridge/plugin 去重、路径/交付/成本聚合。
+  'test-context-call-chain.mjs',
+  // Phase 3：启动补唤醒限量（默认 3，可配置 1~20）。
+  'test-backlog-cap.mjs',
+  // 唤醒硬直接：question 不再绕过每日配额。
+  'test-wake-policy.mjs',
+  // 群分层：小群积极、大群严格、手动覆盖、设置页。
+  'test-group-policy.mjs',
+  // 上下文快照：合并读取 + brief/caps/refs + tool profile。
+  'test-context-snapshot.mjs',
+  // 会话映射：重复 sessionId 必须全部重建，防止上下文串成一条。
+  'test-session-map.mjs',
+  // 记忆卡手动操作：toast 不能阻断 reload，不能引用 item。
+  'test-memory-card-act.mjs',
+  // 限制失败：结构化错误 + 概览 L1 报告 + 本限制提醒。
+  'test-limit-report.mjs',
+  // Action Planner 第一版：close 幂等；step guard 按 assistant step。
+  'test-action-planner.mjs',
+  // SnowLuma 未启动时不能弹断线告警。
+  'test-snowluma-startup-warning.mjs',
+  // 人格语气/智能拆分：只出草稿，用户编辑保存。
+  'test-persona-classify.mjs',
+  // A+B 账单：角色/会话 Markdown + 自动写入服务。
+  'test-billing-report.mjs',
+  'test-billing-service.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
 ];
