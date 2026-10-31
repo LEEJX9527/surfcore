@@ -181,6 +181,11 @@ assert.ok(source.includes('人格卡在「角色」页维护'), '概览移除人
 assert.ok(source.includes('function AdvancedSettings'), '缺少统一的「高级设置」折叠组件');
 assert.ok(source.includes('function Section({ title, note, children, defaultOpen = false, collapsible = true })'), 'Section 必须支持 collapsible（高级设置里不再折叠套折叠）');
 assert.ok(source.includes('function PersonaEditor'), '人格卡编辑器没有抽成内嵌组件');
+assert.ok(source.includes('人格卡已分层'), '人格卡编辑器缺少本次改动/分层说明');
+assert.ok(source.includes('保存当前层'), '人格卡编辑器缺少逐层保存入口');
+assert.ok(source.includes('persona.daily.md') || source.includes('人格日常'), '人格卡编辑器缺少日常层');
+assert.ok(source.includes('QQ 群聊') && source.includes('QQ 私聊'), '人格卡编辑器缺少 QQ 群聊/私聊场景');
+assert.ok(source.includes('不会自动改写'), '人格卡编辑器必须说明是手动编辑，模型不会自动改写');
 assert.ok(source.includes('h(PersonaEditor'), '「角色」页没有渲染人格卡编辑器');
 assert.ok(!source.includes('["persona", "人设"]'), '「人设」标签必须并入「角色」，不能留第二个入口');
 assert.ok(!source.includes('function PersonaTab'), '旧的 PersonaTab 必须删掉，避免两套人格卡入口');
@@ -410,6 +415,15 @@ assert.ok(source.includes('核查 UID 与昵称'), '管理员卡片要有 UID/�
 assert.ok(/api\("\/bili\/verify-user"/.test(source), 'UID 核查要调后端');
 assert.ok(source.includes('4~20 位数字'), 'UID 输入要提示位数范围');
 assert.ok(source.includes('用 B站 昵称填上'), '昵称不一致要能一键填上');
+
+
+
+// ── 断线告警不再“明明连着还弹”（2026-10-31）──
+assert.ok(source.includes('snowluma:send-channel-down'), '前端应识别断线告警的 dedupeKey');
+assert.ok(source.includes('const stale = events.filter'), '连着时应过滤旧断线告警');
+assert.ok(source.includes('body: { ids: stale.map'), '应自动确认旧断线告警');
+assert.ok(source.includes('gateOverviewRef'), '用 overview 判断当前连接状态');
+assert.ok(source.includes('if (!gateOverviewRef.current) return;'), '概览未就绪时不弹，避免误弹');
 
 
 

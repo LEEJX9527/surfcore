@@ -4,6 +4,40 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [0.7.23] - 2026-10-31
+
+### 新增（Phase 0A：上下文/成本遥测，只测量）
+
+- 新增 `src/context-telemetry.js`：旁路记录唤醒、模型调用 usage、工具结果字符数/耗时、
+  turn 起止；只记长度/数量/错误码，不记消息正文或工具参数；
+- 插件通过 `ctx.on('session/event')` 采集所有会话；bridge 在真正投递 wake 时记录
+  prompt 总字符与分段字符；
+- 新增 `scripts/context-telemetry-report.mjs`：按唤醒原因/工具聚合基线，并标出
+  observed / estimated / 覆盖缺口；
+- 不改 prompt、工具可见性、会话策略、turn-guard 阈值；写入失败不影响主链路。
+
+### 新增（人格卡分层）
+
+- `persona.md` 保留为人格核心；新增可选 `persona.daily.md` 和
+  `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+- 组合顺序：核心→场景→日常；QQ 群聊/私聊按会话自动选场景，B站/桌宠各用各的；
+- 超总预算先裁日常、再裁场景，核心优先保留；
+- 角色页「人格卡」改为三层手动编辑，顶部醒目说明本次改动；模型不会自动改写；
+- `/persona` 支持逐层读写与按层备份恢复；快照/回档带三层；
+- 旧角色没有日常/场景文件时行为与旧版一致。
+
+
+## [Unreleased]
+
+### 修复（明明连着 SnowLuma 仍弹「发送通道断开」，且每次打开设置页都弹）
+
+- `close` 加 **15 秒观察窗口**：瞬时断开（1006 抖动/启动）在窗口内重连成功就不记 L2；
+- 恢复（`open`）时 `gateEvents.ackByDedupe('snowluma:send-channel-down')` **自动确认旧告警**，
+  不再每次打开设置页都弹同一个 L2；
+- 文案从“自动唤醒已暂停”改为“通道恢复前会自动跳过主动唤醒”（暂停由连续发送失败触发）；
+- 设置页加载提醒时，若当前 SnowLuma 已连接，过滤并自动确认旧的 `send-channel-down`；
+  概览未就绪时先不弹，避免误弹一次。
+
 ## [0.7.22] - 2026-10-31
 
 ### 修复（主人被叫成对象的称呼：称呼没有按人归属）

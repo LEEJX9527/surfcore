@@ -37,7 +37,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { activeMemoryPaths, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -92,6 +92,7 @@ import { fishGuardStateSummary } from '../tools/lib/fish-guard.mjs';
 import { summarizeQqFishGuard } from './qq-fish-guard.js';
 import { applySessionPermission } from './scheduler.js';
 import { fileStamp, isStale } from '../../../src/config-stamps.js';
+import { createContextTelemetry } from '../../../src/context-telemetry.js';
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -225,6 +226,13 @@ export function apply(ctx) {
   // ── 桌宠（独立栏目，默认不安装；用户自己安装才生效）────────────────────
   const petService = createPetService({ stateDir: STATE_DIR, pluginLog, getSubprocess: () => ctx.get('subprocess') });
   // 桌宠对话与「目的机制」的桌宠载体：和 QQ / B站 共用当前角色的人格卡、记忆卡、目的状态。
+  // Phase 0A：旁路遥测（只读事件，不改 prompt/工具/会话行为）。
+  const contextTelemetry = createContextTelemetry({
+    file: path.join(STATE_DIR, 'context-telemetry-plugin.jsonl'),
+    source: 'plugin',
+    log: (message) => pluginLog(message),
+  });
+
   const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
   const petApi = createPetApiService({
@@ -304,6 +312,8 @@ export function apply(ctx) {
       sessionEventOff = ctx.on('session/event', (session, event) => {
         try { tokenBudget.ingestEvent(session, event); }
         catch (error) { pluginLog('token 用量采集失败：', String(error?.message ?? error).slice(0, 160)); }
+        try { contextTelemetry.ingestEvent(session, event); }
+        catch (error) { pluginLog('上下文遥测失败：', String(error?.message ?? error).slice(0, 160)); }
       });
     }
   } catch (error) {
@@ -1035,17 +1045,39 @@ export function apply(ctx) {
 
   // ── 人设卡 ──────────────────────────────────────────────────────────────
   async function handlePersona(req, res) {
+    const layerPaths = () => {
+      const layers = activePersonaLayers();
+      return layers ? {
+        core: resolvePersonaFile(),
+        daily: layers.daily,
+        scenes: layers.scenes,
+        scenesDir: layers.scenesDir,
+      } : { core: resolvePersonaFile(), daily: '', scenes: {}, scenesDir: '' };
+    };
+    const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
     if (req.method === 'GET') {
-      const text = readTextFile(resolvePersonaFile());
-      const backups = listBackups(80).filter((item) => item.name.startsWith('persona-'));
+      const paths = layerPaths();
+      const core = readTextFile(paths.core);
+      const daily = paths.daily ? readTextFile(paths.daily) : '';
+      const scenes = {};
+      for (const [id, file] of Object.entries(paths.scenes || {})) {
+        scenes[id] = { path: file, text: readTextFile(file), chars: readTextFile(file).length };
+      }
+      const backups = listBackups(120).filter((item) => /^persona(?:-|$)/.test(item.name));
       json(res, 200, {
         ok: true,
-        path: resolvePersonaFile(),
-        text,
-        chars: text.length,
-        mtime: mtimeIso(resolvePersonaFile()),
+        path: paths.core,
+        text: core,
+        chars: core.length,
+        mtime: mtimeIso(paths.core),
+        layers: {
+          core: { path: paths.core, text: core, chars: core.length },
+          daily: { path: paths.daily, text: daily, chars: daily.length },
+          scenes,
+        },
+        sceneLabels,
         backups,
-        note: 'QQ 与 B站共用这一张人设卡；B站 AGENTS.md 只保留日子/流程，不另立人格。',
+        note: '人格卡分层：persona.md 是核心；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
       });
       return;
     }
@@ -1054,30 +1086,62 @@ export function apply(ctx) {
       const name = safeBackupName(body.name);
       if (!name) { json(res, 400, { ok: false, error: '备份名非法' }); return; }
       const source = path.join(BACKUP_DIR, name);
-      if (!fs.existsSync(source)) { json(res, 404, { ok: false, error: '备份不存在' }); return; }
-      backupFile(resolvePersonaFile(), 'persona');
-      fs.copyFileSync(source, resolvePersonaFile());
+      if (!fs.existsSync(source)) { json(res, 404, { ok: false, code: 'PERSONA_BACKUP_MISSING', error: '备份不存在', hint: '刷新备份列表后重试' }); return; }
+      const paths = layerPaths();
+      let target = paths.core;
+      let label = 'persona';
+      if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
+      else if (name.startsWith('persona-scene-')) {
+        const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
+        if (!scene) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: '备份对应的场景未知', hint: '检查备份文件名' }); return; }
+        target = paths.scenes?.[scene] || '';
+        label = `persona-scene-${scene}`;
+      }
+      if (!target) { json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' }); return; }
+      backupFile(target, label);
+      fs.copyFileSync(source, target);
       const cur = readCurrentCharacter();
       if (cur) touchCharacter(cur.id);
-      json(res, 200, { ok: true, restored: name, text: readTextFile(resolvePersonaFile()) });
+      json(res, 200, { ok: true, restored: name, target, text: readTextFile(target), layers: layerPaths() });
+      return;
+    }
+    const layer = String(body.layer || 'core');
+    const scene = String(body.scene || '');
+    const paths = layerPaths();
+    let target = paths.core;
+    let label = 'persona';
+    if (layer === 'daily') {
+      target = paths.daily;
+      label = 'persona-daily';
+    } else if (layer === 'scene') {
+      if (!sceneLabels[scene]) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: `未知场景：${scene}`, hint: '只支持 qq-group / qq-private / bili / pet' }); return; }
+      target = paths.scenes?.[scene] || '';
+      label = `persona-scene-${scene}`;
+    }
+    if (!target) {
+      json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' });
       return;
     }
     const text = String(body.text ?? '');
-    if (text.length < 50) { json(res, 400, { ok: false, error: '人设卡太短（至少 50 字）' }); return; }
-    if (text.length > 64 * 1024) { json(res, 400, { ok: false, error: '人设卡超过 64KB' }); return; }
+    if (layer === 'core' && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格核心太短（至少 50 字）', hint: '核心卡是每次注入的底座，不能留空' }); return; }
+    if (text.length > 64 * 1024) { json(res, 400, { ok: false, code: 'PERSONA_TOO_LARGE', error: '人格内容超过 64KB', hint: '拆成核心/场景/日常层，或精简内容' }); return; }
     const scan = scanText(text);
-    // 人设卡允许出现 QQ 号（称呼表/身份说明本来就需要），但绝不允许密钥、密码、
-    // 身份证/银行卡/住址这类真正敏感的内容被写进每次注入的人格提示词。
     const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
     if (severe) {
-      json(res, 400, { ok: false, error: '人设卡里命中密钥/密码/身份证/住址规则，拒绝保存', labels: [...new Set([...scan.secrets, ...scan.pii.filter((h) => h.severe)].map((h) => h.label))] });
+      json(res, 400, {
+        ok: false,
+        code: 'PERSONA_SENSITIVE',
+        error: '人格内容里命中密钥/密码/身份证/住址规则，拒绝保存',
+        hint: '删掉这些内容后再保存；人格卡不应包含凭据',
+        labels: [...new Set([...scan.secrets, ...scan.pii.filter((h) => h.severe)].map((h) => h.label))],
+      });
       return;
     }
-    const backup = backupFile(resolvePersonaFile(), 'persona');
-    writeTextAtomic(resolvePersonaFile(), text.endsWith('\n') ? text : `${text}\n`);
+    const backup = backupFile(target, label);
+        writeTextAtomic(target, text.endsWith('\n') ? text : `${text}\n`);
     const cur = readCurrentCharacter();
     if (cur) touchCharacter(cur.id);
-    json(res, 200, { ok: true, chars: text.length, backup, path: resolvePersonaFile() });
+    json(res, 200, { ok: true, layer, scene: layer === 'scene' ? scene : '', chars: text.length, backup, path: target, layers: layerPaths() });
   }
 
   // ── 记忆 ────────────────────────────────────────────────────────────────
@@ -1631,7 +1695,7 @@ export function apply(ctx) {
       const name = safeBackupName(body.name);
       if (!name) { json(res, 400, { ok: false, error: '备份名非法' }); return; }
       const source = path.join(BACKUP_DIR, name);
-      if (!fs.existsSync(source)) { json(res, 404, { ok: false, error: '备份不存在' }); return; }
+      if (!fs.existsSync(source)) { json(res, 404, { ok: false, code: 'PERSONA_BACKUP_MISSING', error: '备份不存在', hint: '刷新备份列表后重试' }); return; }
       const map = [
         ['qq-config-', QQ_CONFIG], ['bili-config-', BILI_CONFIG], ['unified-config-', path.join(STATE_DIR, 'config.json')],
         ['persona-', resolvePersonaFile()], ['alignments-', ALIGN_FILE],

@@ -47,7 +47,7 @@ cd D:\deepseekwork\surfcore
 git status --porcelain          # 必须干净，或有明确列出的待发文件
 git log --oneline -5            # 确认最近提交都是要发的
 node -e "console.log(require('./package.json').version)"   # 当前版本
-npm run test:audit              # 必须全绿（当前 90/90；新增/删除测试后同步这个数）
+npm run test:audit              # 必须全绿（当前 94/94；新增/删除测试后同步这个数）
 cd plugins/surfcore && npm test # 必须 0 失败
 ```
 

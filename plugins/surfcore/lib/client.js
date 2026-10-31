@@ -1545,12 +1545,28 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         } finally { setBusy(""); }
       };
       // 闸门事件：L2/L3 才弹；L0/L1 只留在通知列表，不打断。
+      const gateOverviewRef = useRef(overview);
+      useEffect(() => { gateOverviewRef.current = overview; }, [overview]);
       const loadGateEvents = useCallback(async () => {
         try {
           const r = await api("/gate-events?limit=30&includeAcked=0");
-          setGateData(r);
-          const top = (r.events ?? []).find((x) => (x.level === "L3" || x.level === "L2") && !dismissedGates.current.has(x.id));
+          let events = r.events ?? [];
+          // 已经连上 SnowLuma 时，旧的「send-channel-down」不该再弹（用户明明连着）。
+          // 顺手自动确认掉，避免每次打开设置页都弹同一个 L2。
+          const connected = gateOverviewRef.current?.bridge?.snowluma?.connected === true;
+          if (connected) {
+            const stale = events.filter((e) => e.dedupeKey === "snowluma:send-channel-down");
+            if (stale.length) {
+              api("/gate-events", { method: "POST", body: { ids: stale.map((e) => e.id) } }).catch(() => {});
+              events = events.filter((e) => !stale.includes(e));
+            }
+          }
+          setGateData({ ...r, events });
+          // 概览还没加载时先不弹：否则无法判断“现在是否其实连着”，会误弹一次旧告警。
+          if (!gateOverviewRef.current) return;
+          const top = events.find((x) => (x.level === "L3" || x.level === "L2") && !dismissedGates.current.has(x.id));
           if (top) setGateAlert(top);
+          else setGateAlert(null);
         } catch {}
       }, []);
       useEffect(() => {
@@ -3348,46 +3364,88 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     // 现在只有一个「角色」页：上面切角色，下面直接编辑当前角色的人格卡。
     function PersonaEditor({ busy, setBusy, toast, unified, setUnified }) {
       const [data, setData] = useState(null);
-      const [text, setText] = useState("");
+      const [tab, setTab] = useState("core");
+      const [scene, setScene] = useState("qq-group");
+      const [draft, setDraft] = useState({ core: "", daily: "", scenes: {} });
       const [err, setErr] = useState("");
+      const sceneLabels = data?.sceneLabels ?? { "qq-group": "QQ 群聊", "qq-private": "QQ 私聊", bili: "B站", pet: "桌宠" };
       const load = useCallback(async () => {
-        try { const r = await api("/persona"); setData(r); setText(r.text ?? ""); setErr(""); }
-        catch (e) { setErr(e.message); }
+        try {
+          const r = await api("/persona");
+          const layers = r.layers ?? {};
+          setData(r);
+          setDraft({
+            core: layers.core?.text ?? r.text ?? "",
+            daily: layers.daily?.text ?? "",
+            scenes: layers.scenes ?? {},
+          });
+          setErr("");
+        } catch (e) { setErr(e.message); }
       }, []);
       useEffect(() => { load(); }, [load]);
+      const current = tab === "core" ? draft.core : tab === "daily" ? draft.daily : (draft.scenes?.[scene]?.text ?? "");
+      const currentPath = tab === "core" ? data?.layers?.core?.path : tab === "daily" ? data?.layers?.daily?.path : data?.layers?.scenes?.[scene]?.path;
+      const setCurrent = (value) => {
+        setDraft((d) => {
+          if (tab === "core") return { ...d, core: value };
+          if (tab === "daily") return { ...d, daily: value };
+          return { ...d, scenes: { ...d.scenes, [scene]: { ...(d.scenes?.[scene] ?? {}), text: value } } };
+        });
+      };
       const save = async () => {
         setBusy("persona-save");
         try {
-          const r = await api("/persona", { method: "POST", body: { text } });
-          toast(`✓ 人格卡已保存（${r.chars} 字）`);
+          const body = { layer: tab === "scene" ? "scene" : tab, scene: tab === "scene" ? scene : "", text: current };
+          const r = await api("/persona", { method: "POST", body });
+          toast(`✓ 已保存${tab === "core" ? "人格核心" : tab === "daily" ? "人格日常" : `场景：${sceneLabels[scene] || scene}`}（${r.chars} 字）`);
           await load();
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
+        } catch (e) { toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`); } finally { setBusy(""); }
       };
       const restore = async (name) => {
         setBusy("persona-restore");
-        try { const r = await api("/persona", { method: "POST", body: { action: "restore", name } }); setText(r.text ?? ""); toast("✓ 已从备份恢复"); await load(); }
-        catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
+        try { await api("/persona", { method: "POST", body: { action: "restore", name } }); toast("✓ 已从备份恢复"); await load(); }
+        catch (e) { toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`); } finally { setBusy(""); }
       };
+      const layerLabel = tab === "core" ? "人格核心" : tab === "daily" ? "人格日常" : `场景人格：${sceneLabels[scene] || scene}`;
       return h("div", null,
-        h("div", { className: "qbw-infobox" },
-          "当前角色的人格卡：", h("code", { className: "qbw-code" }, data?.path ?? "persona"),
-          "。QQ 桥接每条消息注入它；B站生物钟每次醒来也注入它。角色包切换时，人格卡跟着角色走。"),
-        h(Row, {
-          label: "人格卡文件",
-          hint: "相对 surfcore 或绝对路径；留空自动发现 roles/*.md。改完点底部「保存」；下面的文本编辑用「保存人格卡」。",
+        h("div", { className: "qbw-infobox", style: { borderColor: "#d68910", background: "rgba(214,137,16,.10)" } },
+          h("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "人格卡已分层（本次改动）"),
+          "现在的人格卡拆成三层，全部由你手动编辑，系统不会自动改写：",
+          h("ul", { style: { margin: "4px 0 2px 18px", padding: 0 } },
+            h("li", null, h("b", null, "人格核心"), "：身份、价值观、说话方式、底线；每次必注入，放最前。"),
+            h("li", null, h("b", null, "场景人格"), "：QQ 群聊、QQ 私聊、B站、桌宠分别选择；只注入当前会话的场景。"),
+            h("li", null, h("b", null, "人格日常"), "：近期状态、习惯、心情；放最后，超预算先裁它。")),
+          h("div", { className: "qbw-hint", style: { marginTop: "3px" } },
+            "QQ 群聊/私聊按会话自动选场景；B站/桌宠各用各的。没有填写的层不会注入。保存后下一条 QQ 消息/下一次 B站/桌宠对话生效。")),
+        h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
+          h(Btn, { kind: tab === "core" ? undefined : "qbw-btn2", onClick: () => setTab("core"), disabled: !!busy }, "人格核心"),
+          h(Btn, { kind: tab === "daily" ? undefined : "qbw-btn2", onClick: () => setTab("daily"), disabled: !!busy }, "人格日常"),
+          h(Btn, { kind: tab === "scene" ? undefined : "qbw-btn2", onClick: () => setTab("scene"), disabled: !!busy }, "场景人格")),
+        tab === "scene" ? h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: "2px" } },
+          ...Object.entries(sceneLabels).map(([id, label]) => h(Btn, {
+            key: id, kind: scene === id ? undefined : "qbw-btn3", onClick: () => setScene(id), disabled: !!busy,
+          }, label))) : null,
+        h("div", { className: "qbw-group", style: { marginTop: "8px" } },
+          layerLabel,
+          currentPath ? h("small", null, ` · ${currentPath} · ${current.length} 字`) : null),
+        err ? h("div", { className: "qbw-err" }, err) : null,
+        h("textarea", {
+          className: "qbw-textarea card", value: current, onChange: (e) => setCurrent(e.target.value), spellCheck: false,
+          placeholder: tab === "core" ? "# 角色卡：名字\n\n你是谁、说话方式、价值观、底线…" : tab === "daily" ? "近期状态、习惯、心情、关系温度…（可留空）" : "这个场景下额外的行为方式、称呼、禁忌…（可留空）",
+        }),
+        h("div", { className: "qbw-actions" },
+          h(Btn, { onClick: save, disabled: !!busy }, busy === "persona-save" ? "保存中…" : "保存当前层"),
+          h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "重新读取"),
+          h("span", { className: "qbw-hint" }, "只保存当前选中的层；其它层不动。")),
+        data?.path ? h(Row, {
+          label: "旧人格卡文件（仅兼容）",
+          hint: "角色系统启用时以角色包内的 persona.md 为准；这一栏只给没有角色的旧布局用。",
         }, h("input", {
           className: "qbw-input wide",
           value: unified?.persona?.file ?? "",
           onChange: (e) => setUnified(["persona", "file"], e.target.value),
           placeholder: "roles/你的角色.md",
-        })),
-        h("div", { className: "qbw-group" }, "人格卡内容", data ? h("small", null, `${data.path} · ${data.chars} 字 · ${fmtTime(data.mtime)}`) : null),
-        err ? h("div", { className: "qbw-err" }, err) : null,
-        h("textarea", { className: "qbw-textarea card", value: text, onChange: (e) => setText(e.target.value), spellCheck: false }),
-        h("div", { className: "qbw-actions" },
-          h(Btn, { onClick: save, disabled: !!busy }, busy === "persona-save" ? "保存中…" : "保存人格卡"),
-          h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "重新读取"),
-          h("span", { className: "qbw-hint" }, "保存即生效；QQ 下一条消息、B站下一次醒来就会用新卡。")),
+        })) : null,
         data?.backups?.length ? h(Section, { title: "人格卡历史备份", note: `${data.backups.length} 份` },
           data.backups.slice(0, 12).map((b) => h("div", { key: b.name, className: "qbw-item" },
             h("div", null, h("div", { className: "qbw-label" }, b.name), h("div", { className: "qbw-hint" }, `${fmtBytes(b.bytes)} · ${fmtTime(new Date(b.mtime).toISOString())}`)),

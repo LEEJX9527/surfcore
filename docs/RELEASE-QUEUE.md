@@ -11,6 +11,61 @@
 
 ## 待发布
 
+### 批次 2026-10-31 10:20 · Phase 0A 上下文/成本遥测（只测量）
+<!-- release-batch: start=2026-10-31T10:20+08:00 end=2026-10-31T10:40+08:00 commits=c7df162 -->
+
+**覆盖提交**：`c7df162`
+**建议**：**0.7.24**（若人格卡分层已作为 0.7.23 发布；否则可与它合并为 0.7.23）
+
+**需求**：先建立真实 token/上下文账单，不改行为。
+
+**实现**：
+- `src/context-telemetry.js` 旁路 JSONL：wake / model usage / tool 结果字符数+耗时 / turn 起止；
+- 插件 `session/event` 采所有会话；bridge 投递 wake 时记录 prompt 总字符与分段；
+- `scripts/context-telemetry-report.mjs` 按唤醒原因/工具聚合基线，标 observed/estimated/覆盖缺口；
+- 不记录消息正文/工具参数；写失败不影响主链路；不改 prompt、工具、guard、会话策略。
+
+**未做**：Phase 1 工具契约/复合快照；系统提示/工具 schema/历史的精确拆分。
+
+**case**：[docs/cases/2026-10-31-context-telemetry.md](cases/2026-10-31-context-telemetry.md)
+**验证**：`node scripts/test-context-telemetry.mjs`；`plugins/surfcore npm test`；
+`npm run test:audit` 94/94。
+**交接**：同步 `src/{context-telemetry,bridge}.js`、`plugins/surfcore/lib/index.js`、
+`scripts/context-telemetry-report.mjs`、测试、docs、manifest。
+重启 DSH + QQ 桥接后开始采集；建议 3–7 天基线再进 Phase 1。
+
+---
+
+### 批次 2026-10-31 10:05 · 人格卡分层（0.7.22 后）
+<!-- release-batch: start=2026-10-31T10:05+08:00 end=2026-10-31T10:35+08:00 commits=bf673a2 -->
+
+**覆盖提交**：`bf673a2`
+**建议**：patch → **0.7.23**
+
+**需求**：人格卡拆成【人格核心】【人格日常】【场景人格】；QQ 分群聊/私聊；
+B站/桌宠各用各的场景；全部手动编辑；角色页醒目说明本次改动。
+
+**实现**：
+- `persona.md` 继续是人格核心；新增可选 `persona.daily.md` 与
+  `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+- `src/persona-layers.js` 统一组合核心→场景→日常，超预算先裁日常/场景；
+- QQ 按 `group:`/`private:` 选场景；B站/桌宠接同一套分层；
+- `/persona` 三层读写、按层备份恢复；快照/回档带三层；
+- 角色页三层手动编辑 + 顶部醒目说明；模型不自动改写；
+- 记忆卡/向量记忆未动。
+
+**未做**：日常/场景自动生成、任务型 ContextRecipe、记忆分层、缓存收益实测。
+
+**case**：[docs/cases/2026-10-31-persona-layers.md](cases/2026-10-31-persona-layers.md)
+**验证**：`node scripts/test-persona-layers.mjs`；
+`plugins/surfcore/scripts/test-character-api.mjs`；`test-client-contract.mjs`；
+`plugins/surfcore npm test`；`npm run test:audit` 93/93。
+**交接**：同步 `src/{persona-layers,character-persona,bridge}.js`、
+`plugins/surfcore/lib/{index,client,scheduler,pet-chat}.js`、测试、docs、manifest。
+改动后 QQ 下一条消息 / B站下一次醒来 / 桌宠下一次对话生效；真实页面/注入还需手测。
+
+---
+
 ### 已发布 v0.7.21 · 2026-10-31 08:10 · 一键启动 SurfCore / 一键停止（0.7.20 后）
 <!-- release-batch: start=2026-10-31T08:10+08:00 end=2026-10-31T08:30+08:00 commits=282dc6c -->
 

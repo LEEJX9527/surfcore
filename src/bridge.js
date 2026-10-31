@@ -76,7 +76,10 @@ import {
 } from './memory-card.js';
 import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
+  readPersonaLayerText,
 } from './character-persona.js';
+import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
+import { createContextTelemetry } from './context-telemetry.js';
 import { createBiliDynamicsSync } from './bili-dynamics.js';
 import { createBiliShareScheduler } from './bili-share-scheduler.js';
 import { createBiliCardSender, normalizeCardMode } from './bili-card.js';
@@ -3121,6 +3124,15 @@ async function main() {
         : undefined)
   });
 
+  // Phase 0A：只记录唤醒/prompt 字符数，不参与任何行为判断。
+  const contextTelemetry = createContextTelemetry({
+    file: path.join(STATE_DIR, 'context-telemetry-bridge.jsonl'),
+    source: 'bridge',
+    log: (...args) => log(...args),
+  });
+  let telemetryWakeSeq = 0;
+  let lastWakePromptMeta = null;
+
   /** sessionId -> 最近一次已知的实际模型。切换模型会让单价差好几倍，所以按会话记。 */
   const sessionModels = new Map();
   const nominalModel = () => cfg.dsh?.model || 'deepseek-flash';
@@ -3694,6 +3706,8 @@ async function main() {
     lastSendFailAt: 0,    // 最近一次真实 QQ 发送失败
     lastSendError: '',
     downNotified: false,  // 通道断开告警是否已发出（边沿触发）
+    downTimer: null,      // close 后的观察窗口（重连很快时不该报 L2）
+    downReason: '',
   };
 
   /** 记录一次"上游还活着"的证据。任何来自 SnowLuma 的事件包都算（含心跳）。 */
@@ -3813,7 +3827,7 @@ async function main() {
       event: 'send-channel-down',
       action: 'blocked',
       reason: { code: 'SNOWLUMA_OFFLINE', message },
-      impact: '当前无法把消息发到 QQ；自动唤醒已暂停，避免先生成后丢弃、白烧 token。',
+      impact: '当前无法把消息发到 QQ；通道恢复前会自动跳过主动唤醒，避免先生成后丢弃、白烧 token。',
       recommendation: '启动或重启 SnowLuma（launcher.bat），确认 OneBot HTTP :3000 与 WS :3001 可用；恢复后会自动继续。',
       confidence: 'confirmed',
       dedupeKey: 'snowluma:send-channel-down',
@@ -3823,6 +3837,13 @@ async function main() {
   }
 
   function notifySendChannelUp() {
+    if (snowlumaHealth.downTimer) {
+      clearTimeout(snowlumaHealth.downTimer);
+      snowlumaHealth.downTimer = null;
+    }
+    // 不管告警是否真的发过，都把“未处理”的断线事件确认掉：
+    // 重连成功后用户明明连着，不该再被 L2 弹窗追着确认（2026-10-31 用户反馈）。
+    try { gateEvents.ackByDedupe('snowluma:send-channel-down'); } catch {}
     if (!snowlumaHealth.downNotified) return;
     snowlumaHealth.downNotified = false;
     gateEvents.record({
@@ -5849,7 +5870,7 @@ async function main() {
               userId: selfUserId || null,
               line: selfIdentityTextV2().trim() || null
             },
-            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
+            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2(key) : currentRoleHint(key) },
             memoryCard: memoryCardPromptBlock(),
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
@@ -11018,7 +11039,7 @@ async function main() {
     st.activeExitAt = now;
     // 先取消尚未触发的旧回复/补刀定时器，避免退场期间再冒出旧发言
     cancelSocialTimers(key);
-    const roleHint = currentRoleHint();
+    const roleHint = currentRoleHint(key);
     const promptText = buildActiveExitPrompt(key, roleHint);
     scheduleSocialReply(
       key, promptText,
@@ -11741,6 +11762,24 @@ async function main() {
         }
       }
     }
+    if (opts.wakeReason) {
+      telemetryWakeSeq += 1;
+      try {
+        contextTelemetry.wake({
+          wakeId: `w_${Date.now()}_${telemetryWakeSeq}`,
+          key,
+          sessionId,
+          reason: opts.wakeReason,
+          promptChars: promptText.length,
+          layers: {
+            ...(lastWakePromptMeta ?? {}),
+            prompt: promptText.length,
+            snapshot: wakeSnapshot ? JSON.stringify(wakeSnapshot).length : 0,
+            media: Array.isArray(opts.media) ? opts.media.length : 0,
+          },
+        });
+      } catch {}
+    }
     let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
     if (Array.isArray(opts.media) && opts.media.length > 0) {
       const imageParts = await resolveMediaList(opts.media);
@@ -11855,7 +11894,7 @@ async function main() {
               st.proactiveNextCheckAt = now + randInt(Number(cfg.social?.proactiveCheckMinMs ?? 2700000), Number(cfg.social?.proactiveCheckMaxMs ?? 5400000));
               if (Math.random() < Number(cfg.social?.proactiveProbability ?? 0.2)) {
                 enterActive(key);
-                const roleHint = currentRoleHint();
+                const roleHint = currentRoleHint(key);
                 const promptText = buildProactivePrompt(key, roleHint);
                 scheduleSocialReply(
                   key, promptText,
@@ -11971,7 +12010,7 @@ async function main() {
         log(`摘要投喂创建会话失败 (${k}): ${error?.message ?? error}`);
         continue;
       }
-      const roleHint = currentRoleHint();
+      const roleHint = currentRoleHint(k);
       const summaryText = `${roleHint ? roleHint + '\n\n' : ''}【群聊摘要】过去一段时间群里发生了这些（你未逐条参与）：\n${lines}\n\n【最近对话】\n${buildContextBlock(k)}\n\n你不需要回复，只需记住这些内容，后续聊天会更自然。`;
       const silentId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       social.silentTurns.set(sessionId, [...(social.silentTurns.get(sessionId) ?? []), { id: silentId, ts: Date.now() }]);
@@ -12112,11 +12151,15 @@ async function main() {
 
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
-  function roleHintForMode(mode) {
-    const selected = selectRoleText(roleRawContent(), mode);
-    const base = selected
-      ? (selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected)
-      : '';
+  function roleHintForMode(mode, key = '') {
+    const core = roleRawContent();
+    const sceneId = personaSceneFromKey(key);
+    const scene = sceneId ? readPersonaLayerText('scene', sceneId) : '';
+    const daily = readPersonaLayerText('daily');
+    const composed = composePersonaLayers({
+      core, scene, daily, mode, maxChars: roleInjectMaxChars, sceneId,
+    });
+    const base = composed.text || '';
     // B站记忆单独追加：不受人格卡 6000 字上限影响（上限只保护角色卡本身）。
     // 这样群友问起 B 站经历时，她知道那就是自己的 B站账号，而不是“另一个人”。
     const biliBrief = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
@@ -12128,8 +12171,8 @@ async function main() {
     const memoryBlock = memoryCardPromptBlock();
     return [base, adminBlock, biliBrief, memoryBlock].filter(Boolean).join('\n\n');
   }
-  function currentRoleHint() {
-    return roleHintForMode('v1');
+  function currentRoleHint(key = '') {
+    return roleHintForMode('v1', key);
   }
 
   // ── 最近聊天上下文（chat 模式）────────────────────────────────────────────
@@ -12374,9 +12417,9 @@ async function main() {
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
   }
 
-  function currentRoleHintV2() {
+  function currentRoleHintV2(key = '') {
     // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
-    const raw = roleHintForMode('v2');
+    const raw = roleHintForMode('v2', key);
     if (!raw) return '';
     // 一代仿真模式专用指令整行过滤，避免污染二代工具协议。
     // 用 role-card.js 导出的那份（文件顶部已 import）：这里原先又抄了一份同源正则，
@@ -13172,6 +13215,30 @@ async function main() {
     const memoryCardText = memoryCardPromptBlock();
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    lastWakePromptMeta = {
+      role: roleLine.length,
+      identity: identityLine.length,
+      provenance: provenanceLine.length,
+      admin: adminLine.length,
+      bili: biliLine.length,
+      memory: memoryCardLine.length,
+      token: tokenLine.length,
+      initialPrompt: initialPromptLine.length,
+      antiAi: antiAiLine.length,
+      proactive: proactiveLine.length,
+      closure: closureLine.length,
+      sticker: stickerLine.length,
+      stickerMatch: stickerMatchLine.length,
+      reply: replyLine.length,
+      status: statusLine.length,
+      wake: wakeLine.length,
+      memoryStatus: memoryLine.length,
+      participation: participationLine.length,
+      fishGuard: fishGuardLine.length,
+      tokenGuard: tokenGuardLine.length,
+      preSleep: preSleepLine.length,
+      base: base.length,
+    };
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -14354,7 +14421,7 @@ async function main() {
     }
 
     // 角色扮演提示注入（仅注入给 agent，不影响群友之间的正常对话语义）
-    const roleHint = currentRoleHint();
+    const roleHint = currentRoleHint(key);
 
     // 最近聊天上下文：先取「当前消息之前」的窗口，再把当前消息记进窗口。
     const recentBlock = currentMode === 'chat' ? buildRecentChatBlock(key) : '';
@@ -14503,7 +14570,7 @@ async function main() {
 
       // 触发成功：进入活跃，贴最近上下文 + 当前消息 + 人格（仅此一次），让 AI 回复
       enterActive(key);
-      const roleHint = currentRoleHint();
+      const roleHint = currentRoleHint(key);
       const currentLine = (isOwner && kind === 'private') ? `${ownerMessageTag()}${sender}：${textContent}` : `${sender}：${textContent}`;
       const directionHint = textContent.includes('[引用') ? DIRECTION_HINT + '\n' : '';
       const replyInstruction = direct
@@ -15586,7 +15653,16 @@ async function main() {
   bot.on('close', (info) => {
     snowlumaHealth.connected = false;
     log(`SnowLuma 连接断开（code=${info?.code ?? '?'}），重连中…`);
-    notifySendChannelDown(`SnowLuma 连接断开（code=${info?.code ?? '?'}）`);
+    // 1006 在每次启动/短暂抖动都会出现，重连通常几百毫秒；先给 15 秒观察窗口，
+    // 窗口内重连成功就不记 L2、不弹窗（2026-10-31：用户明明连着却收到“通道断开”）。
+    snowlumaHealth.downReason = `SnowLuma 连接断开（code=${info?.code ?? '?'}）`;
+    if (snowlumaHealth.downTimer) clearTimeout(snowlumaHealth.downTimer);
+    snowlumaHealth.downTimer = setTimeout(() => {
+      snowlumaHealth.downTimer = null;
+      if (snowlumaHealth.connected === true) return;
+      notifySendChannelDown(snowlumaHealth.downReason || 'SnowLuma 连接断开');
+    }, 15_000);
+    snowlumaHealth.downTimer.unref?.();
     // 连不上时最常见的原因就是换了 QQ 账号 → token 变了；顺手自愈。
     // 注意 1006 在**每次启动**都可能出现一次：HTTP token 与 WS token 是两个不同的值，
     // config.json 里存的是前者，WS 需要用自愈发现的那个（详见 bot.connect() 处的说明）。

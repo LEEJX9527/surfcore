@@ -184,6 +184,10 @@ const tests = [
   'test-snowluma-channel-gate.mjs',
   // 一键启动/停止接线：QQ/B站/桌宠/语音多选、语音本地/云端分支、结构化失败。
   'test-launch-components.mjs',
+  // 人格卡分层：核心/场景/日常、QQ群聊/私聊、预算裁剪、v1/v2 小节过滤。
+  'test-persona-layers.mjs',
+  // Phase 0A：遥测只读、模型调用去重、工具结果大小、报告聚合。
+  'test-context-telemetry.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
 ];

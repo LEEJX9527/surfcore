@@ -33,6 +33,8 @@ import * as adminIdentity from '../src/admin-identity.js';
 import * as questionAnswers from '../src/question-answers.js';
 import * as ownerAudit from '../src/owner-audit.js';
 import * as roleCard from '../src/role-card.js';
+import * as personaLayers from '../src/persona-layers.js';
+import * as contextTelemetry from '../src/context-telemetry.js';
 import * as memoryCard from '../src/memory-card.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
@@ -250,7 +252,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...callname,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...personaLayers, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...conversationClosure,
@@ -258,6 +260,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
     readCurrentCharacter: () => null,
     activePersonaFile: () => '',
+    readPersonaLayerText: () => '',
     activeBiliDir: () => path.join(temp, 'dsh', 'surfcore', 'bili'),
     activePlatformStateDir: (legacyDir) => legacyDir,
     activeMemoryPaths: () => {

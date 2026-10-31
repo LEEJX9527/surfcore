@@ -3014,3 +3014,58 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 - **修法**（0.7.22）：`src/callname.js` 按当前 QQ 取称呼并只注入当前会话；
   记忆行渲染成 `说话人（私聊/群聊）：内容`，并补"称呼只属于原话的人"规则。
 - **教训**：跨会话共享的记忆必须带归属（谁说的、哪个场景），否则 A 的偏好会套到 B 身上。
+
+## #93（2026-10-31）人格卡只有一张，日常/场景混在一起，改一点就把缓存前缀打掉
+
+**现象**：人格卡 `persona.md` 一整张注入 QQ/B站/桌宠；想改近期状态只能改整张，
+B站/桌宠被迫读 QQ 规则；核心和日常没有边界。
+
+**根因**：
+- 角色系统只有单 `persona.md`，`role.maxInjectChars` 只做总长度截断；
+- 没有平台/群聊/私聊场景文件；
+- 日常变化会改整段系统提示，缓存从变化点失效。
+
+**修法**：
+- `persona.md` 保持人格核心；新增可选 `persona.daily.md` 与
+  `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+- `src/persona-layers.js` 统一组合：核心→场景→日常，超预算先裁日常/场景；
+- QQ 按 `group:`/`private:` 选场景；B站/桌宠各读自己的场景；
+- `/persona` 三层读写，客户端逐层手动编辑 + 醒目说明；不做自动改写；
+- 快照/回档带三层；旧角色没有新文件时行为不变。
+
+**未做**：日常自动生成、任务型 ContextRecipe、记忆分层、缓存收益实测。
+
+**验证**：`test-persona-layers`（组合/预算/平台/v1v2/接线）、
+`test-character-api`（三层读写/未知场景/快照回档）、`test-client-contract`（分层 UI）；
+`npm run test:audit` 93/93。
+
+## #94（2026-10-31）只有总 token，没有逐唤醒/逐工具账单，无法判断钱花在哪
+
+**现象**：token 账本只有「QQ/B站/其他 + 当日总量」，能看到今天花了多少，
+但回答不了：哪类唤醒最多、哪一步开始膨胀、哪个工具反复查、工具结果多大。
+
+**根因**：
+- token ledger 只折叠 provider usage；
+- 工具调用/结果只在 `tool-calls.jsonl` 有日志，没有和模型调用/唤醒关联；
+- prompt 组成没有分段统计。
+
+**修法（Phase 0A）**：
+- 新增 `src/context-telemetry.js`：旁路 JSONL，只记录长度/usage/工具名/错误码，不记正文；
+- 插件 `session/event` 采所有会话的 turn/model/tool 事件；
+- bridge 在真正投递 wake 时记录 prompt 总字符与分段字符；
+- `scripts/context-telemetry-report.mjs` 输出按唤醒原因/工具聚合的基线；
+- observed / estimated / coveragePct 明确标注，不把字符数冒充 token。
+
+**不做**：不改 prompt、工具、guard、会话策略；不改 token 账本。
+
+**验证**：`test-context-telemetry.mjs`（去重/工具大小/不记正文/写失败不抛/接线）、
+`npm run test:audit` 94/94。
+
+## SnowLuma 明明连着却弹「发送通道断开」，且每次打开设置页都弹
+
+- **现象**：WS 正常、能收发，但概览弹 L2 send-channel-down（code=1006）；打开设置页反复弹。
+- **根因**：`close` 立刻记 L2（1006 多为瞬时抖动）；恢复（open）只记 L1，不确认旧 L2；
+  UI 每轮取未确认事件 → 一直弹；文案还误称“自动唤醒已暂停”。
+- **修法**（0.7.23）：close 加 15 秒去抖窗口；open 时 `ackByDedupe` 自动确认旧断线事件；
+  文案改为“恢复前跳过主动唤醒”；UI 在 connected=true 时过滤并自动确认旧事件。
+- **教训**：断线是事件、不可用是状态；告警要看状态并带去抖，恢复要结掉旧事件。

@@ -5,14 +5,41 @@
 
 ---
 
-## 快照：2026-10-30 14:15–14:50（对齐 v0.7.18 现状）
+## 快照：2026-10-31 09:55（对齐 v0.7.22 + 人格分层）
 
 ### 当前事实
 
-- **HEAD**：`282dc6c feat(launch): 一键启动/停止整合`（0.7.20 后）
-- **package.json version**：`0.7.20`（编辑会话未改版本）
-- **工作区**：干净（`git status --porcelain` 无输出）
+- **HEAD**：`c7df162 feat(telemetry): Phase 0A 遥测`（0.7.22 后）
+- **package.json version**：`0.7.22`（编辑会话未改版本）
+- **工作区**：干净
 - 本会话上一段（10-29）的离线导入、中文路径、管理员称呼修复均已进 v0.7.0–v0.7.4。
+
+### 本次新增（2026-10-31 10:15，0.7.22 后，Phase 0A）
+
+- **上下文/成本遥测（只测量）**：
+  - `src/context-telemetry.js`：旁路 JSONL，记录唤醒、模型 usage、工具结果字符数/耗时、turn 起止；
+  - 插件 `session/event` 采所有会话；bridge 在真正投递 wake 时记录 prompt 字符/分段；
+  - `scripts/context-telemetry-report.mjs` 输出按唤醒原因/工具聚合的基线；
+  - 不改 prompt、工具、guard、会话策略；observed/estimated/coverage 缺口明确标注；
+  - 数据：`<repo>/state/context-telemetry-bridge.jsonl` +
+    `~/.dsh/surfcore/context-telemetry-plugin.jsonl`。
+- 测试：`test-context-telemetry`；`npm run test:audit` **94/94**。
+- 未做：Phase 1 工具契约/复合快照；系统提示/工具 schema/历史的精确拆分。
+- 下一步：重启 DSH + QQ 桥接，正常用 3–7 天，跑报告建立基线，再进 Phase 1。
+
+### 本次新增（2026-10-31 09:55，0.7.22 后）
+
+- **人格卡分层（Persona Layers v1）**：
+  - `persona.md` 保留人格核心；新增可选 `persona.daily.md` 与
+    `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+  - `src/persona-layers.js` 统一组合核心→场景→日常；QQ 群聊/私聊按会话选场景；
+  - B站/桌宠也读各自场景 + 日常；超预算先裁日常/场景；
+  - 角色页三层手动编辑，顶部醒目说明；不做模型自动改写；
+  - `/persona` 逐层读写、按层备份恢复；快照/回档带三层；
+  - 记忆卡/向量记忆未动。
+- 测试：`test-persona-layers`、`test-character-api`、`test-client-contract`；
+  `npm run test:audit` **93/93**（含本批新增）。
+- 未手测：真实 QQ 群聊/私聊注入、B站/桌宠实际提示词、页面三层编辑的浏览器交互。
 
 ### v0.7.4 → v0.7.18 发布线
 
